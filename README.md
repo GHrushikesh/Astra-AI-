@@ -30,37 +30,77 @@ This module provides deterministic Python tool functions with a standardized res
 Astra/
 │
 ├── actions/
-│   ├── __init__.py           # Package exports (ActionResult, errors, logger)
+│   ├── __init__.py           # Package exports (ActionResult, execute_action, registry)
 │   ├── base.py               # Standardized ActionResult envelope & error hierarchy
-│   ├── app_actions.py        # Application Manager (open, close, status, find)
-│   ├── file_actions.py       # File & Folder Manager (Milestone 3)
-│   ├── system_actions.py     # System Diagnostics & Windows Controls (Milestones 4-5)
-│   ├── web_actions.py        # Web Actions & Search (Milestone 6)
-│   └── registry.py           # Tool Registry & Schema Discovery (Milestone 7)
+│   ├── app_actions.py        # Application Manager (4 tools)
+│   ├── file_actions.py       # File & Folder Manager (7 tools)
+│   ├── system_actions.py     # System Diagnostics & Windows Controls (18 tools)
+│   ├── web_actions.py        # Web Actions & Search (5 tools)
+│   └── registry.py           # Tool Registry & Schema Discovery (34 tools registered)
+│
+├── docs/
+│   └── member1_integration.md # Complete Integration Contract for Project Lead / AI Core
 │
 ├── tests/
 │   ├── __init__.py
-│   ├── test_foundation.py    # Foundation and ActionResult tests
-│   └── test_app_actions.py   # Application Manager tests
+│   ├── test_foundation.py    # Foundation and ActionResult tests (7 tests)
+│   ├── test_app_actions.py   # Application Manager tests (15 tests)
+│   ├── test_file_actions.py  # File & Folder Manager tests (22 tests)
+│   ├── test_system_actions.py# System Info & Windows Controls tests (30 tests)
+│   ├── test_web_actions.py   # Web Actions tests (13 tests)
+│   └── test_registry.py      # Action Registry & Validation tests (14 tests)
 │
 ├── requirements.txt          # Python dependencies (psutil, Pillow)
-└── .gitignore
+├── .gitignore
+└── README.md
 ```
 
 ---
 
-### Implemented Modules
+### Implemented Modules & Capabilities (34 Tools Total)
 
-#### Milestone 1: Foundation
-- `ActionResult`: Standardized return envelope implementing the Python mapping protocol (both attribute access `res.success` and dictionary access `res["success"]`).
-- `ActionError` & `ActionConfirmationRequired`: Structured exception hierarchy.
-- Logging with `NullHandler` allowing seamless integration with the host application.
+1. **Application Manager (`actions/app_actions.py` - 4 Tools)**
+   - `find_application`, `open_application`, `close_application`, `is_application_running`
+   - Registry App Paths + PATH + common directory resolution. Detached asynchronous execution. Protected process guards.
 
-#### Milestone 2: Application Manager (`actions/app_actions.py`)
-- `find_application(name)`: Deterministically locates executables using direct paths, system PATH, Windows Registry `App Paths`, and common program directories.
-- `open_application(name)`: Asynchronously launches applications detached from the host process.
-- `is_application_running(name)`: Inspects active processes using case-insensitive exact matching.
-- `close_application(name)`: Safely terminates running processes with graceful termination first, protected process safeguards (`PROTECTED_PROCESSES`), and permission handling.
+2. **File & Folder Manager (`actions/file_actions.py` - 7 Tools)**
+   - `open_file`, `open_folder`, `search_file`, `create_folder`, `rename_file`, `move_file`, `get_file_info`
+   - Windows default app launch, bounded recursive search, overwrite-protected rename and move, directory self-move blocking, structured file metadata. Zero silent deletion.
+
+3. **System Information (`actions/system_actions.py` - 8 Tools)**
+   - `get_cpu_usage`, `get_memory_usage`, `get_disk_usage`, `get_battery_status`, `get_network_status`, `get_os_info`, `get_running_processes`, `get_system_info`
+   - Read-only hardware & OS metrics using `psutil`, `socket`, and `platform`. Graceful battery fallback for desktop PCs.
+
+4. **Windows Controls (`actions/system_actions.py` - 10 Tools)**
+   - `volume_up`, `volume_down`, `mute`, `unmute`, `toggle_mute`, `take_screenshot`, `lock_pc`, `sleep_pc`, `restart_pc`, `shutdown_pc`
+   - Direct Windows multimedia key events (`user32.keybd_event`). Timestamped collision-resistant screenshots (`Pillow`). Workstation lock (`user32.LockWorkStation`). Confirmation-guarded power controls (`sleep_pc`, `restart_pc`, `shutdown_pc` require `confirmed=True`).
+
+5. **Web Actions (`actions/web_actions.py` - 5 Tools)**
+   - `open_website`, `web_search`, `google_search`, `youtube_search`, `github_search`
+   - Default browser integration (`webbrowser`). URL scheme allowlisting (`http`/`https` only; blocks `file://`, `javascript:`). Safe URL encoding (`urllib.parse.quote_plus`).
+
+6. **Action & Tool Registry (`actions/registry.py` - 34 Tools Registered)**
+   - Central discovery, metadata serialization (`list_actions`, `get_action_metadata`), lightweight parameter validation, confirmation checking, and execution dispatching (`execute_action`).
+
+---
+
+### Integration Guide
+
+For full integration details, parameter schemas, confirmation handling, and AI Core code examples, refer to:
+👉 **[docs/member1_integration.md](docs/member1_integration.md)**
+
+```python
+from actions.registry import execute_action, list_actions
+
+# Discover available tools
+tools = list_actions()
+
+# Execute an action
+result = execute_action("open_application", {"name": "chrome"})
+if result.success:
+    print(result.message)  # "Application 'chrome' opened successfully."
+    print(result.data)     # {"name": "chrome", "path": "...", "pid": 1234}
+```
 
 ---
 
@@ -71,7 +111,7 @@ Astra/
 pip install -r requirements.txt
 ```
 
-#### 2. Run Test Suite
+#### 2. Run Test Suite (101 Tests Passing)
 ```powershell
 py -m unittest discover -s tests -v
 ```
