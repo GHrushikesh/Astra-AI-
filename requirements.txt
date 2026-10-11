@@ -1,0 +1,5 @@
+# Astra Windows Automation / Action Layer Dependencies
+# Keep dependencies minimal to ensure fast startup and reliability
+
+psutil>=6.0.0
+Pillow>=10.0.0
