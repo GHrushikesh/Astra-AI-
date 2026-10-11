@@ -10,10 +10,22 @@ from actions.base import (
     ActionResult,
     get_logger,
 )
+from actions.registry import (
+    ActionRegistry,
+    execute_action,
+    get_action,
+    get_action_metadata,
+    list_actions,
+)
 
 __all__ = [
     "ActionResult",
     "ActionError",
     "ActionConfirmationRequired",
     "get_logger",
+    "ActionRegistry",
+    "execute_action",
+    "get_action",
+    "get_action_metadata",
+    "list_actions",
 ]

@@ -65,10 +65,11 @@ class TestActionFoundation(unittest.TestCase):
         self.assertTrue(hasattr(actions.web_actions, "web_search"))
         self.assertTrue(hasattr(actions.registry, "registry"))
 
-    def test_stubs_raise_not_implemented(self):
-        """Verify stubs safely indicate pending milestones."""
-        with self.assertRaises(NotImplementedError):
-            actions.file_actions.open_file("test.txt")
+    def test_registry_unregistered_tool(self):
+        """Verify registry reports unregistered tools safely."""
+        res = actions.registry.registry.execute("unregistered_tool")
+        self.assertFalse(res.success)
+        self.assertIn("not registered", res.message)
 
 
 if __name__ == "__main__":
