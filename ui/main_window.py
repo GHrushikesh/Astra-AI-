@@ -1,0 +1,1209 @@
+"""Main Astra desktop window — polished light-theme redesign with sidebar."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional
+
+from PySide6.QtCore import (
+    QEasingCurve,
+    QPropertyAnimation,
+    QRect,
+    QSize,
+    QThread,
+    Qt,
+    Signal,
+    Slot,
+)
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QPainter,
+    QPainterPath,
+    QPixmap,
+)
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QPushButton,
+    QSizePolicy,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ui.assistant_interface import AssistantInterface, AssistantResponse, EchoAssistant
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Worker thread
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _AssistantWorker(QThread):
+    """Run one assistant request away from Qt's main thread."""
+
+    response_ready = Signal(object)
+
+    def __init__(self, assistant: AssistantInterface, user_text: str) -> None:
+        super().__init__()
+        self._assistant = assistant
+        self._user_text = user_text
+
+    def run(self) -> None:
+        try:
+            response = self._assistant.process(self._user_text)
+            if not isinstance(response, AssistantResponse):
+                response = AssistantResponse(
+                    text="The assistant returned an invalid response.",
+                    success=False,
+                    error="Invalid AssistantResponse",
+                )
+        except Exception as exc:
+            response = AssistantResponse(
+                text="I couldn't process that request.",
+                success=False,
+                error=str(exc),
+            )
+        self.response_ready.emit(response)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Avatar helper
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_avatar_pixmap(letter: str, bg: str, fg: str, size: int = 32) -> QPixmap:
+    """Render a crisp round avatar with a centred letter."""
+    pix = QPixmap(size, size)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path = QPainterPath()
+    path.addEllipse(0, 0, size, size)
+    p.fillPath(path, QColor(bg))
+    p.setPen(QColor(fg))
+    p.setFont(QFont("Segoe UI", int(size * 0.38), QFont.Weight.Bold))
+    p.drawText(QRect(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, letter)
+    p.end()
+    return pix
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Typing-indicator dots
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _TypingDot(QWidget):
+    """One animated dot for the typing indicator."""
+
+    def __init__(self, delay_ms: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(8, 8)
+        self._anim = QPropertyAnimation(self, b"geometry")
+        self._anim.setDuration(700)
+        self._anim.setLoopCount(-1)
+        self._anim.setEasingCurve(QEasingCurve.Type.SineCurve)
+        self._delay = delay_ms
+
+    def start(self) -> None:
+        geo = self.geometry()
+        self._anim.setStartValue(QRect(geo.x(), geo.y(), 8, 8))
+        self._anim.setEndValue(QRect(geo.x(), geo.y() - 6, 8, 8))
+        self._anim.setStartDelay(self._delay)
+        self._anim.start()
+
+    def stop(self) -> None:
+        self._anim.stop()
+        # Reset position
+        geo = self.geometry()
+        self.setGeometry(QRect(geo.x(), geo.y(), 8, 8))
+
+    def paintEvent(self, _event) -> None:  # type: ignore[override]
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(QColor("#347be8"))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(0, 0, 8, 8)
+
+
+class _TypingIndicator(QWidget):
+    """Three-dot bounce animation shown while Astra is thinking."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 8, 4, 8)
+        layout.setSpacing(5)
+        self._dots: list[_TypingDot] = []
+        for delay in (0, 160, 320):
+            dot = _TypingDot(delay, self)
+            self._dots.append(dot)
+            layout.addWidget(dot)
+        layout.addStretch()
+        self.setFixedHeight(30)
+
+    def start(self) -> None:
+        for d in self._dots:
+            d.start()
+
+    def stop(self) -> None:
+        for d in self._dots:
+            d.stop()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Message bubble
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _MessageBubble(QWidget):
+    """Chat message with avatar, sender name, body text, and timestamp."""
+
+    def __init__(self, sender: str, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        is_user = sender == "user"
+        is_error = sender == "error"
+
+        labels = {"user": "You", "assistant": "Astra", "error": "Error"}
+        display_name = labels.get(sender, sender.title())
+        timestamp = datetime.now().strftime("%H:%M")
+
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # Avatar
+        av = QLabel()
+        if is_user:
+            av.setPixmap(_make_avatar_pixmap("Y", "#211d3d", "#ffffff"))
+        elif is_error:
+            av.setPixmap(_make_avatar_pixmap("!", "#e53e3e", "#ffffff"))
+        else:
+            av.setPixmap(_make_avatar_pixmap("A", "#347be8", "#ffffff"))
+        av.setFixedSize(36, 36)
+        av.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        # Card
+        card = QFrame()
+        card.setObjectName("userBubble" if is_user else ("errorBubble" if is_error else "astraBubble"))
+        card_lay = QVBoxLayout(card)
+        card_lay.setContentsMargins(14, 10, 14, 10)
+        card_lay.setSpacing(3)
+
+        # Header row: sender name + timestamp
+        header_row = QHBoxLayout()
+        header_row.setSpacing(8)
+        name_lbl = QLabel(display_name)
+        name_lbl.setObjectName("bubbleSender")
+        time_lbl = QLabel(timestamp)
+        time_lbl.setObjectName("bubbleTimestamp")
+        header_row.addWidget(name_lbl)
+        header_row.addWidget(time_lbl)
+        header_row.addStretch()
+
+        text_lbl = QLabel(text)
+        text_lbl.setObjectName("bubbleText")
+        if is_user:
+            text_lbl.setObjectName("bubbleTextUser")
+        text_lbl.setWordWrap(True)
+        text_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        text_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+
+        card_lay.addLayout(header_row)
+        card_lay.addWidget(text_lbl)
+
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(10)
+        shadow.setOffset(0, 2)
+        shadow.setColor(QColor(0, 0, 0, 16))
+        card.setGraphicsEffect(shadow)
+
+        # Layout: user → right-aligned, assistant/error → left-aligned
+        if is_user:
+            outer.setContentsMargins(60, 3, 4, 3)
+            inner = QHBoxLayout()
+            inner.setSpacing(10)
+            inner.addStretch(1)
+            inner.addWidget(card)
+            inner.addWidget(av)
+            outer.addLayout(inner)
+        else:
+            outer.setContentsMargins(4, 3, 60, 3)
+            inner = QHBoxLayout()
+            inner.setSpacing(10)
+            inner.addWidget(av)
+            inner.addWidget(card)
+            inner.addStretch(1)
+            outer.addLayout(inner)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Settings dialog
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _SettingsDialog(QDialog):
+    """Modal settings panel with a clean, styled layout."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Astra · Settings")
+        self.setModal(True)
+        self.setMinimumWidth(380)
+        self._build()
+        self._style()
+
+    def _build(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(28, 24, 28, 20)
+        root.setSpacing(16)
+
+        # Title
+        title = QLabel("Settings")
+        title.setObjectName("settingsTitle")
+        root.addWidget(title)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setObjectName("settingsSep")
+        root.addWidget(sep)
+
+        # Appearance section
+        root.addWidget(self._section_label("Appearance"))
+        self.compact_mode = QCheckBox("Compact message spacing")
+        self.compact_mode.setObjectName("settingsCheck")
+        root.addWidget(self.compact_mode)
+
+        # Notifications section
+        root.addWidget(self._section_label("Notifications"))
+        self.notifications = QCheckBox("Show desktop notifications")
+        self.notifications.setObjectName("settingsCheck")
+        self.notifications.setChecked(True)
+        root.addWidget(self.notifications)
+
+        # Typing speed (future placeholder)
+        root.addWidget(self._section_label("Response"))
+        speed_row = QHBoxLayout()
+        speed_row.setSpacing(10)
+        speed_lbl = QLabel("Max response length")
+        speed_lbl.setObjectName("settingsRowLabel")
+        self.max_len = QSpinBox()
+        self.max_len.setRange(100, 4000)
+        self.max_len.setValue(1000)
+        self.max_len.setSuffix(" tokens")
+        self.max_len.setObjectName("settingsSpinBox")
+        speed_row.addWidget(speed_lbl)
+        speed_row.addStretch()
+        speed_row.addWidget(self.max_len)
+        root.addLayout(speed_row)
+
+        root.addSpacing(8)
+
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.setObjectName("settingsButtons")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    @staticmethod
+    def _section_label(text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setObjectName("settingsSection")
+        return lbl
+
+    def _style(self) -> None:
+        self.setStyleSheet(
+            """
+            QDialog {
+                background: #ffffff;
+                font-family: 'Segoe UI', Arial, sans-serif;
+            }
+            QLabel#settingsTitle {
+                font-size: 18px;
+                font-weight: 700;
+                color: #111a35;
+            }
+            QFrame#settingsSep {
+                background: #ebeaf1;
+                border: none;
+                max-height: 1px;
+            }
+            QLabel#settingsSection {
+                font-size: 11px;
+                font-weight: 700;
+                color: #8a8fa0;
+                letter-spacing: 1px;
+                text-transform: uppercase;
+                padding-top: 4px;
+            }
+            QLabel#settingsRowLabel {
+                font-size: 13px;
+                color: #242139;
+            }
+            QCheckBox#settingsCheck {
+                font-size: 13px;
+                color: #242139;
+                spacing: 8px;
+            }
+            QCheckBox#settingsCheck::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 4px;
+                border: 1.5px solid #cbc9d8;
+                background: #ffffff;
+            }
+            QCheckBox#settingsCheck::indicator:checked {
+                background: #347be8;
+                border-color: #347be8;
+            }
+            QSpinBox#settingsSpinBox {
+                background: #f4f6f9;
+                border: 1px solid #dfe4eb;
+                border-radius: 6px;
+                padding: 4px 8px;
+                color: #242139;
+                font-size: 13px;
+                min-width: 130px;
+            }
+            QDialogButtonBox#settingsButtons QPushButton {
+                min-width: 80px;
+                min-height: 32px;
+                border-radius: 7px;
+                font-weight: 600;
+                font-size: 13px;
+                padding: 0 16px;
+            }
+            QDialogButtonBox#settingsButtons QPushButton[text="OK"] {
+                background: #211d3d;
+                color: #ffffff;
+                border: none;
+            }
+            QDialogButtonBox#settingsButtons QPushButton[text="Cancel"] {
+                background: transparent;
+                color: #57536b;
+                border: 1px solid #dedce8;
+            }
+            QDialogButtonBox#settingsButtons QPushButton[text="Cancel"]:hover {
+                background: #f4f6f9;
+            }
+            """
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main window
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MainWindow(QMainWindow):
+    """Astra's conversation window — light theme with sidebar and session history."""
+
+    microphone_requested = Signal()
+    message_submitted = Signal(str)
+
+    # Accent colours mirrored in QSS so Python logic can stay in sync
+    _ACCENT = "#347be8"
+    _DARK   = "#211d3d"
+
+    def __init__(
+        self,
+        assistant: Optional[AssistantInterface] = None,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._assistant = assistant or EchoAssistant()
+        self._worker: Optional[_AssistantWorker] = None
+        self._sessions: list[dict[str, object]] = []
+        self._current_session: dict[str, object] = {}
+        self._sidebar_collapsed = False
+        self._build_ui()
+
+    # ── UI construction ───────────────────────────────────────────────────────
+
+    def _build_ui(self) -> None:
+        self.setWindowTitle("Astra")
+        self.setMinimumSize(900, 600)
+        self.resize(1180, 760)
+
+        central = QWidget(self)
+        central.setObjectName("centralWidget")
+        self.setCentralWidget(central)
+
+        root = QHBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── Sidebar ────────────────────────────────────────────────────
+        self.sidebar = QWidget()
+        self.sidebar.setObjectName("sidebar")
+        self.sidebar.setFixedWidth(210)
+        sb = QVBoxLayout(self.sidebar)
+        sb.setContentsMargins(14, 18, 14, 14)
+        sb.setSpacing(4)
+
+        # Sidebar header
+        sb_header = QHBoxLayout()
+        sb_logo = QLabel()
+        sb_logo.setPixmap(_make_avatar_pixmap("A", self._ACCENT, "#ffffff", 28))
+        sb_logo.setFixedSize(28, 28)
+        sb_header.addWidget(sb_logo)
+        sb_brand = QLabel("Astra")
+        sb_brand.setObjectName("sidebarBrand")
+        sb_header.addWidget(sb_brand)
+        sb_header.addStretch()
+        self._collapse_btn = QPushButton("◧")
+        self._collapse_btn.setObjectName("sidebarIcon")
+        self._collapse_btn.setFixedSize(26, 26)
+        self._collapse_btn.setToolTip("Collapse sidebar")
+        self._collapse_btn.clicked.connect(self._toggle_sidebar)
+        sb_header.addWidget(self._collapse_btn)
+        sb.addLayout(sb_header)
+        sb.addSpacing(20)
+
+        # New conversation button
+        new_chat_btn = QPushButton("＋  New conversation")
+        new_chat_btn.setObjectName("newChatButton")
+        new_chat_btn.clicked.connect(self._start_new_chat)
+        sb.addWidget(new_chat_btn)
+        sb.addSpacing(6)
+
+        # Search toggle
+        self._search_btn = QPushButton("🔍  Search conversations")
+        self._search_btn.setObjectName("sidebarButton")
+        self._search_btn.clicked.connect(self._toggle_chat_search)
+        sb.addWidget(self._search_btn)
+
+        self.chat_search = QLineEdit()
+        self.chat_search.setObjectName("chatSearch")
+        self.chat_search.setPlaceholderText("Search chats…")
+        self.chat_search.textChanged.connect(self._filter_chat_history)
+        self.chat_search.hide()
+        sb.addWidget(self.chat_search)
+        sb.addSpacing(14)
+
+        # Chat history list
+        history_lbl = QLabel("Recent")
+        history_lbl.setObjectName("sidebarSection")
+        sb.addWidget(history_lbl)
+
+        self.chat_history = QListWidget()
+        self.chat_history.setObjectName("chatHistory")
+        self.chat_history.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.chat_history.itemClicked.connect(self._restore_chat)
+        sb.addWidget(self.chat_history, 1)
+
+        # Discover (placeholder)
+        discover_btn = QPushButton("✦  Discover")
+        discover_btn.setObjectName("sidebarButton")
+        sb.addWidget(discover_btn)
+
+        sb.addStretch()
+
+        # Bottom area
+        settings_btn = QPushButton("⚙  Settings")
+        settings_btn.setObjectName("sidebarButton")
+        settings_btn.clicked.connect(self._show_settings)
+        sb.addWidget(settings_btn)
+
+        help_btn = QPushButton("?  Help center")
+        help_btn.setObjectName("sidebarButton")
+        sb.addWidget(help_btn)
+
+        account = QLabel("●  Astra workspace")
+        account.setObjectName("accountLabel")
+        sb.addWidget(account)
+
+        root.addWidget(self.sidebar)
+
+        # ── Content panel ──────────────────────────────────────────────
+        content = QWidget()
+        content.setObjectName("contentPanel")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
+        # Header bar
+        header_bar = QWidget()
+        header_bar.setObjectName("headerBar")
+        header_bar.setFixedHeight(58)
+        hl = QHBoxLayout(header_bar)
+        hl.setContentsMargins(20, 0, 20, 0)
+        hl.setSpacing(12)
+
+        self._expand_btn = QPushButton("◫")
+        self._expand_btn.setObjectName("ghostButton")
+        self._expand_btn.setFixedSize(30, 30)
+        self._expand_btn.setToolTip("Expand sidebar")
+        self._expand_btn.clicked.connect(self._toggle_sidebar)
+        self._expand_btn.hide()  # Hidden until sidebar is collapsed
+        hl.addWidget(self._expand_btn)
+
+        hdr_logo = QLabel()
+        hdr_logo.setPixmap(_make_avatar_pixmap("A", self._ACCENT, "#ffffff", 30))
+        hdr_logo.setFixedSize(30, 30)
+        hl.addWidget(hdr_logo)
+
+        hdr_col = QVBoxLayout()
+        hdr_col.setSpacing(0)
+        self._chat_title_lbl = QLabel("New conversation")
+        self._chat_title_lbl.setObjectName("headerChatTitle")
+        hdr_col.addWidget(self._chat_title_lbl)
+        hl.addLayout(hdr_col)
+        hl.addStretch()
+
+        self.connection_label = QLabel("● Ready")
+        self.connection_label.setObjectName("pillReady")
+        hl.addWidget(self.connection_label)
+
+        self.settings_button = QPushButton("⚙  Settings")
+        self.settings_button.setObjectName("ghostButton")
+        self.settings_button.setToolTip("Open Astra settings")
+        self.settings_button.clicked.connect(self._show_settings)
+        hl.addWidget(self.settings_button)
+
+        content_layout.addWidget(header_bar)
+
+        sep = QFrame()
+        sep.setObjectName("headerSep")
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFixedHeight(1)
+        content_layout.addWidget(sep)
+
+        # Chat wrapper
+        chat_wrapper = QWidget()
+        chat_wrapper.setObjectName("chatWrapper")
+        cwl = QVBoxLayout(chat_wrapper)
+        cwl.setContentsMargins(0, 0, 0, 0)
+        cwl.setSpacing(0)
+
+        # Welcome panel
+        self.welcome_panel = QWidget()
+        self.welcome_panel.setObjectName("welcomePanel")
+        wl = QVBoxLayout(self.welcome_panel)
+        wl.setContentsMargins(32, 56, 32, 24)
+        wl.setSpacing(6)
+
+        wlc_logo = QLabel()
+        wlc_logo.setPixmap(_make_avatar_pixmap("A", self._ACCENT, "#ffffff", 52))
+        wlc_logo.setFixedSize(52, 52)
+        wl.addWidget(wlc_logo, 0, Qt.AlignmentFlag.AlignHCenter)
+        wl.addSpacing(4)
+
+        wlc_title = QLabel("Built to think.")
+        wlc_title.setObjectName("welcomeTitle")
+        wlc_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        wl.addWidget(wlc_title)
+
+        wlc_sub = QLabel("Designed to assist.")
+        wlc_sub.setObjectName("welcomeSubtitle")
+        wlc_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        wl.addWidget(wlc_sub)
+
+        wl.addSpacing(28)
+
+        # Suggestion chips
+        chips_lbl = QLabel("Try asking:")
+        chips_lbl.setObjectName("chipsLabel")
+        wl.addWidget(chips_lbl)
+
+        chips_row = QHBoxLayout()
+        chips_row.setSpacing(10)
+        suggestions = [
+            ("📋  Generate a plan", "Generate a plan for my week"),
+            ("📝  Summarize text", "Summarize the following text:"),
+            ("💡  Explain a concept", "Explain what machine learning is"),
+            ("🖥️  Open an app", "Open Notepad"),
+        ]
+        for chip_label, chip_value in suggestions:
+            btn = QPushButton(chip_label)
+            btn.setObjectName("suggestionButton")
+            btn.clicked.connect(
+                lambda _checked=False, v=chip_value: (
+                    self.input.setText(v),
+                    self.input.setFocus(),
+                )
+            )
+            chips_row.addWidget(btn)
+        chips_row.addStretch()
+        wl.addLayout(chips_row)
+        wl.addStretch()
+
+        cwl.addWidget(self.welcome_panel)
+
+        self.conversation = QListWidget()
+        self.conversation.setObjectName("conversationList")
+        self.conversation.setAccessibleName("Conversation")
+        self.conversation.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.conversation.setSpacing(4)
+        self.conversation.setUniformItemSizes(False)
+        self.conversation.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self.conversation.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        cwl.addWidget(self.conversation)
+        content_layout.addWidget(chat_wrapper, 1)
+
+        # Status bar
+        self.status_label = QLabel("Ready  ·  Type a message to get started")
+        self.status_label.setObjectName("statusLabel")
+        self.status_label.setContentsMargins(24, 4, 24, 4)
+        content_layout.addWidget(self.status_label)
+
+        # Composer
+        composer_outer = QWidget()
+        composer_outer.setObjectName("composerOuter")
+        col = QHBoxLayout(composer_outer)
+        col.setContentsMargins(20, 10, 20, 16)
+
+        composer_frame = QFrame()
+        composer_frame.setObjectName("composerFrame")
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(20)
+        shadow.setOffset(0, -3)
+        shadow.setColor(QColor(0, 0, 0, 15))
+        composer_frame.setGraphicsEffect(shadow)
+
+        cmp = QHBoxLayout(composer_frame)
+        cmp.setContentsMargins(14, 8, 8, 8)
+        cmp.setSpacing(8)
+
+        self.input = QLineEdit()
+        self.input.setObjectName("messageInput")
+        self.input.setPlaceholderText("Message Astra…")
+        self.input.setClearButtonEnabled(True)
+        self.input.returnPressed.connect(self._submit_from_input)
+        cmp.addWidget(self.input, 1)
+
+        self.microphone_button = QPushButton("🎤")
+        self.microphone_button.setObjectName("iconButton")
+        self.microphone_button.setFixedSize(40, 40)
+        self.microphone_button.setToolTip("Voice input (coming soon)")
+        self.microphone_button.clicked.connect(self.microphone_requested)
+        cmp.addWidget(self.microphone_button)
+
+        self.send_button = QPushButton("Send  ↑")
+        self.send_button.setObjectName("sendButton")
+        self.send_button.setFixedHeight(40)
+        self.send_button.clicked.connect(self._submit_from_input)
+        cmp.addWidget(self.send_button)
+
+        col.addWidget(composer_frame)
+        content_layout.addWidget(composer_outer)
+
+        root.addWidget(content, 1)
+
+        self._apply_style()
+        self._current_session = self._new_session("New conversation")
+        self._add_message("assistant", "Hello! I'm Astra — how can I help you today?")
+
+    # ── Stylesheet ────────────────────────────────────────────────────────────
+
+    def _apply_style(self) -> None:
+        self.setStyleSheet(
+            """
+            /* ── Base ─────────────────────────────────────────── */
+            QWidget {
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 13px;
+            }
+            QWidget#centralWidget {
+                background: #eef1f5;
+            }
+
+            /* ── Sidebar ──────────────────────────────────────── */
+            QWidget#sidebar {
+                background: #f8f9fb;
+                border-right: 1px solid #e3e7ec;
+            }
+            QLabel#sidebarBrand {
+                color: #131a2f;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            QLabel#sidebarSection {
+                color: #9ba3b4;
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 1.5px;
+                padding: 3px 4px 1px 4px;
+            }
+            QListWidget#chatHistory {
+                background: transparent;
+                border: none;
+                outline: none;
+                color: #3b4460;
+                font-size: 12px;
+            }
+            QListWidget#chatHistory::item {
+                padding: 6px 8px;
+                border-radius: 7px;
+                margin: 1px 0;
+            }
+            QListWidget#chatHistory::item:hover {
+                background: #eef2fa;
+                color: #131a2f;
+            }
+            QListWidget#chatHistory::item:selected {
+                background: #e0eafc;
+                color: #211d3d;
+            }
+            QLineEdit#chatSearch {
+                background: #eef0f4;
+                border: 1.5px solid #dfe4eb;
+                border-radius: 7px;
+                padding: 6px 10px;
+                color: #263149;
+                font-size: 12px;
+            }
+            QLineEdit#chatSearch:focus {
+                border-color: #347be8;
+                background: #ffffff;
+            }
+            QLabel#accountLabel {
+                color: #347be8;
+                font-size: 11px;
+                font-weight: 600;
+                padding: 10px 4px 2px 4px;
+                border-top: 1px solid #edf0f3;
+            }
+            QPushButton#sidebarButton {
+                background: transparent;
+                border: none;
+                color: #3b4460;
+                text-align: left;
+                padding: 8px 6px;
+                font-size: 12px;
+                border-radius: 7px;
+            }
+            QPushButton#sidebarButton:hover {
+                background: #eef2fa;
+                color: #131a2f;
+            }
+            QPushButton#sidebarIcon {
+                background: transparent;
+                border: none;
+                color: #8a91a0;
+                font-size: 14px;
+                border-radius: 5px;
+            }
+            QPushButton#sidebarIcon:hover {
+                background: #eef2fa;
+                color: #3b4460;
+            }
+            QPushButton#newChatButton {
+                background: #347be8;
+                border: none;
+                border-radius: 8px;
+                color: #ffffff;
+                text-align: left;
+                padding: 9px 10px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton#newChatButton:hover {
+                background: #2563c7;
+            }
+
+            /* ── Content panel ────────────────────────────────── */
+            QWidget#contentPanel {
+                background: #ffffff;
+                border: 1px solid #e3e7ed;
+                border-radius: 14px;
+                margin: 8px 8px 8px 0;
+            }
+
+            /* ── Header ───────────────────────────────────────── */
+            QWidget#headerBar {
+                background: #ffffff;
+                border-top-left-radius: 14px;
+                border-top-right-radius: 14px;
+            }
+            QFrame#headerSep {
+                background: #f0eef7;
+                border: none;
+            }
+            QLabel#headerChatTitle {
+                color: #131a2f;
+                font-size: 14px;
+                font-weight: 600;
+            }
+
+            /* ── Status pills ─────────────────────────────────── */
+            QLabel#pillReady {
+                background: #e9fbf2;
+                color: #16834f;
+                border-radius: 12px;
+                padding: 4px 14px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            QLabel#pillThinking {
+                background: #fff0f7;
+                color: #c9246e;
+                border-radius: 12px;
+                padding: 4px 14px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+
+            /* ── Welcome panel ────────────────────────────────── */
+            QWidget#chatWrapper { background: #ffffff; }
+            QWidget#welcomePanel { background: #ffffff; }
+            QLabel#welcomeTitle {
+                color: #111a35;
+                font-size: 36px;
+                font-weight: 400;
+            }
+            QLabel#welcomeSubtitle {
+                color: #c8cbd4;
+                font-size: 36px;
+                font-weight: 400;
+            }
+            QLabel#chipsLabel {
+                color: #9ba3b4;
+                font-size: 11px;
+                font-weight: 600;
+                letter-spacing: 0.5px;
+            }
+            QPushButton#suggestionButton {
+                background: #ffffff;
+                border: 1.5px solid #e4e8f0;
+                border-radius: 9px;
+                color: #2d3a55;
+                padding: 8px 12px;
+                font-size: 12px;
+                font-weight: 500;
+                text-align: left;
+            }
+            QPushButton#suggestionButton:hover {
+                background: #f0f6ff;
+                border-color: #347be8;
+                color: #1a2a4a;
+            }
+
+            /* ── Conversation list ────────────────────────────── */
+            QListWidget#conversationList {
+                background: #ffffff;
+                border: none;
+                padding: 14px 16px;
+            }
+            QListWidget#conversationList::item {
+                background: transparent;
+                border: none;
+                color: transparent;
+                padding: 0;
+            }
+            QScrollBar:vertical {
+                background: #f4f4f7;
+                width: 5px;
+                border-radius: 3px;
+            }
+            QScrollBar::handle:vertical {
+                background: #d0cedd;
+                border-radius: 3px;
+                min-height: 24px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
+            }
+
+            /* ── Message bubbles ──────────────────────────────── */
+            QFrame#astraBubble {
+                background: #f8f9fc;
+                border: 1px solid #eaebf0;
+                border-radius: 14px;
+                border-top-left-radius: 4px;
+            }
+            QFrame#userBubble {
+                background: #211d3d;
+                border: 1px solid #211d3d;
+                border-radius: 14px;
+                border-top-right-radius: 4px;
+            }
+            QFrame#errorBubble {
+                background: #fff4f5;
+                border: 1px solid #f5c7ce;
+                border-radius: 14px;
+            }
+            QLabel#bubbleSender {
+                color: #8e8b9d;
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 1px;
+            }
+            QLabel#bubbleTimestamp {
+                color: #b8b5c6;
+                font-size: 10px;
+            }
+            QLabel#bubbleText {
+                color: #242139;
+                font-size: 13px;
+                line-height: 1.55;
+            }
+            QLabel#bubbleTextUser {
+                color: #f0eeff;
+                font-size: 13px;
+                line-height: 1.55;
+            }
+
+            /* ── Status bar ───────────────────────────────────── */
+            QLabel#statusLabel {
+                color: #a0a8bc;
+                font-size: 11px;
+                background: #ffffff;
+            }
+
+            /* ── Composer ─────────────────────────────────────── */
+            QWidget#composerOuter { background: #ffffff; }
+            QFrame#composerFrame {
+                background: #ffffff;
+                border: 1.5px solid #e4e7ed;
+                border-radius: 14px;
+            }
+            QFrame#composerFrame:focus-within {
+                border-color: #347be8;
+            }
+            QLineEdit#messageInput {
+                background: transparent;
+                border: none;
+                padding: 8px 6px;
+                color: #131a2f;
+                font-size: 14px;
+            }
+
+            /* ── Buttons ──────────────────────────────────────── */
+            QPushButton {
+                border-radius: 8px;
+                font-weight: 600;
+                font-size: 13px;
+            }
+            QPushButton#sendButton {
+                background: #211d3d;
+                color: #ffffff;
+                border: none;
+                padding: 0 20px;
+                min-height: 36px;
+                min-width: 90px;
+            }
+            QPushButton#sendButton:hover { background: #342e5a; }
+            QPushButton#sendButton:pressed { background: #160f2e; }
+            QPushButton#sendButton:disabled {
+                background: #dddbe8;
+                color: #a09cb4;
+            }
+            QPushButton#iconButton {
+                background: #f4f3f9;
+                border: 1px solid #e2e0eb;
+                color: #6f6a82;
+                font-size: 16px;
+                border-radius: 10px;
+            }
+            QPushButton#iconButton:hover {
+                background: #fff0f7;
+                border-color: #e08cbf;
+                color: #c9246e;
+            }
+            QPushButton#ghostButton {
+                background: transparent;
+                color: #57536b;
+                border: 1px solid #e0dded;
+                padding: 0 14px;
+                min-height: 30px;
+                font-size: 12px;
+            }
+            QPushButton#ghostButton:hover {
+                background: #f4f2fb;
+                color: #211d3d;
+            }
+            QPushButton:disabled { opacity: 0.45; }
+            """
+        )
+
+    # ── Session management ────────────────────────────────────────────────────
+
+    def _new_session(self, title: str) -> dict[str, object]:
+        session: dict[str, object] = {"title": title, "messages": []}
+        self._sessions.insert(0, session)
+        self._refresh_chat_history()
+        return session
+
+    def _refresh_chat_history(self) -> None:
+        query = self.chat_search.text().strip().lower()
+        self.chat_history.clear()
+        for session in self._sessions:
+            title = str(session.get("title", "Untitled"))
+            if query and query not in title.lower():
+                continue
+            item = QListWidgetItem(title)
+            item.setData(Qt.ItemDataRole.UserRole, session)
+            self.chat_history.addItem(item)
+        # Highlight the active session
+        self._sync_history_selection()
+
+    def _sync_history_selection(self) -> None:
+        for i in range(self.chat_history.count()):
+            item = self.chat_history.item(i)
+            if item and item.data(Qt.ItemDataRole.UserRole) is self._current_session:
+                self.chat_history.setCurrentItem(item)
+                return
+
+    def _toggle_chat_search(self) -> None:
+        visible = not self.chat_search.isVisible()
+        self.chat_search.setVisible(visible)
+        if visible:
+            self.chat_search.setFocus()
+        else:
+            self.chat_search.clear()
+            self._refresh_chat_history()
+
+    def _filter_chat_history(self, _text: str) -> None:
+        self._refresh_chat_history()
+
+    def _start_new_chat(self) -> None:
+        if self._worker is not None:
+            return  # Don't interrupt an ongoing request
+        self._current_session = self._new_session("New conversation")
+        self.conversation.clear()
+        self.welcome_panel.show()
+        self._chat_title_lbl.setText("New conversation")
+        self._add_message("assistant", "Hello! I'm Astra — how can I help you today?")
+        self.status_label.setText("Ready  ·  Type a message to get started")
+        self._set_thinking_state(False)
+
+    def _restore_chat(self, item: QListWidgetItem) -> None:
+        session = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(session, dict):
+            return
+        self._current_session = session
+        self.conversation.clear()
+        messages: list = session.get("messages", [])  # type: ignore[assignment]
+        has_user_msg = any(s == "user" for s, _ in (messages or []))
+        self.welcome_panel.setVisible(not has_user_msg)
+        self._chat_title_lbl.setText(str(session.get("title", "Conversation")))
+        for sender, text in (messages or []):
+            self._add_message(str(sender), str(text), record=False)
+        self._sync_history_selection()
+
+    # ── Sidebar collapse ──────────────────────────────────────────────────────
+
+    def _toggle_sidebar(self) -> None:
+        self._sidebar_collapsed = not self._sidebar_collapsed
+        self.sidebar.setVisible(not self._sidebar_collapsed)
+        self._expand_btn.setVisible(self._sidebar_collapsed)
+
+    # ── Settings ──────────────────────────────────────────────────────────────
+
+    def _show_settings(self) -> None:
+        dialog = _SettingsDialog(self)
+        dialog.exec()
+
+    # ── Messaging ─────────────────────────────────────────────────────────────
+
+    def _submit_from_input(self) -> None:
+        text = self.input.text().strip()
+        if not text or not self.send_button.isEnabled():
+            return
+        self.input.clear()
+        self.welcome_panel.hide()
+        self._add_message("user", text)
+        self._set_thinking_state(True)
+        self.message_submitted.emit(text)
+
+        self._worker = _AssistantWorker(self._assistant, text)
+        self._worker.response_ready.connect(self._show_response)
+        self._worker.finished.connect(self._assistant_finished)
+        self._worker.start()
+
+    def _set_thinking_state(self, thinking: bool) -> None:
+        if thinking:
+            self.status_label.setText("Astra is thinking…")
+            self.connection_label.setText("● Thinking")
+            self.connection_label.setObjectName("pillThinking")
+        else:
+            self.status_label.setText("Ready  ·  Type a message to get started")
+            self.connection_label.setText("● Ready")
+            self.connection_label.setObjectName("pillReady")
+        # Force Qt to re-evaluate objectName-based QSS rules
+        self.connection_label.style().unpolish(self.connection_label)
+        self.connection_label.style().polish(self.connection_label)
+        self.send_button.setEnabled(not thinking)
+        self.input.setEnabled(not thinking)
+
+    @Slot()
+    def _assistant_finished(self) -> None:
+        worker = self._worker
+        self._worker = None
+        if worker is not None:
+            worker.deleteLater()
+
+    def _show_response(self, response: AssistantResponse) -> None:
+        self._set_thinking_state(False)
+        if response.success:
+            self._add_message("assistant", response.text)
+            self.status_label.setText("Ready")
+        else:
+            self._add_message("error", response.error or "The assistant is unavailable.")
+            self.status_label.setText("Error — see message above for details")
+        self.input.setFocus()
+
+    def _add_message(self, sender: str, text: str, record: bool = True) -> None:
+        if record:
+            messages = self._current_session.setdefault("messages", [])
+            if isinstance(messages, list):
+                messages.append((sender, text))
+            # Auto-title from first user message
+            if sender == "user" and self._current_session.get("title") == "New conversation":
+                new_title = text[:30] + ("…" if len(text) > 30 else "")
+                self._current_session["title"] = new_title
+                self._chat_title_lbl.setText(new_title)
+                self._refresh_chat_history()
+
+        bubble = _MessageBubble(sender, text)
+        item = QListWidgetItem()
+        item.setFlags(Qt.ItemFlag.NoItemFlags)
+        self.conversation.addItem(item)
+        self.conversation.setItemWidget(item, bubble)
+
+        # Size calculation
+        list_w = self.conversation.viewport().width()
+        bubble.setFixedWidth(max(list_w - 10, 200))
+        bubble.adjustSize()
+        item.setSizeHint(QSize(list_w - 10, bubble.sizeHint().height() + 6))
+        self.conversation.scrollToBottom()
+
+    # ── Resize: reflow bubble widths ──────────────────────────────────────────
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        list_w = self.conversation.viewport().width()
+        for i in range(self.conversation.count()):
+            item = self.conversation.item(i)
+            widget = self.conversation.itemWidget(item)
+            if widget:
+                widget.setFixedWidth(max(list_w - 10, 200))
+                widget.adjustSize()
+                item.setSizeHint(QSize(list_w - 10, widget.sizeHint().height() + 6))
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    @Slot()
+    def show(self) -> None:
+        super().show()
+        self.input.setFocus()
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        worker = self._worker
+        if worker is not None:
+            worker.blockSignals(True)
+            if worker.isRunning():
+                worker.wait()
+            self._worker = None
+        event.accept()
