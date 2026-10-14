@@ -50,7 +50,13 @@ Astra/
 │   ├── test_web_actions.py   # Web Actions tests (13 tests)
 │   └── test_registry.py      # Action Registry & Validation tests (14 tests)
 │
-├── requirements.txt          # Python dependencies (psutil, Pillow)
+│
+├── ui/
+│   ├── __init__.py            # Desktop UI package exports
+│   ├── assistant_interface.py # UI-to-AI-core response contract
+│   └── main_window.py         # PySide6 chat window (sidebar, sessions, bubbles)
+├── app.py                     # Desktop application entry point
+├── requirements.txt           # Python dependencies (psutil, Pillow, PySide6)
 ├── .gitignore
 └── README.md
 ```
@@ -115,3 +121,19 @@ pip install -r requirements.txt
 ```powershell
 py -m unittest discover -s tests -v
 ```
+
+#### 3. Run the desktop UI
+```powershell
+py app.py
+```
+
+The desktop UI features:
+- **Sidebar** with conversation history, search, new-chat, settings, and help
+- **Session management** — sessions are auto-titled from the first user message and can be restored
+- **Chat bubbles** — user (right-aligned) and Astra (left-aligned) with avatars and timestamps
+- **Welcome panel** with quick-start suggestion chips
+- **Collapsible sidebar** via the ◧ button
+- **Settings dialog** with appearance and notification controls
+
+> The current UI uses a temporary echo assistant until the project lead integrates
+> the AI core through `AssistantInterface.process(user_text)`.
