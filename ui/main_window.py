@@ -327,8 +327,13 @@ class _SettingsDialog(QDialog):
         sep.setObjectName("settingsSep")
         root.addWidget(sep)
 
+        # Voice section
         root.addWidget(self._section_label("Voice"))
         voice_form = QFormLayout()
+        voice_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        voice_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        voice_form.setHorizontalSpacing(16)
+        voice_form.setVerticalSpacing(10)
 
         # Microphone — populated from the voice service (real devices when available)
         self.microphone = QComboBox()
@@ -338,49 +343,68 @@ class _SettingsDialog(QDialog):
         if self._settings.microphone not in mic_devices:
             self.microphone.addItem(self._settings.microphone)
         self.microphone.setCurrentText(self._settings.microphone)
+        self.microphone.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-        # Speaker — static until Phase 5 enumerates audio output devices
+        # Speaker — static until audio output device enumeration
         self.speaker = QComboBox()
         self.speaker.addItem("Default speaker")
         if self._settings.speaker not in {"Default speaker"}:
             self.speaker.addItem(self._settings.speaker)
         self.speaker.setCurrentText(self._settings.speaker)
+        self.speaker.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-        voice_form.addRow("Microphone", self.microphone)
-        voice_form.addRow("Speaker", self.speaker)
-        root.addLayout(voice_form)
+        mic_lbl = QLabel("Microphone")
+        mic_lbl.setObjectName("settingsRowLabel")
+        speaker_lbl = QLabel("Speaker")
+        speaker_lbl.setObjectName("settingsRowLabel")
+        voice_form.addRow(mic_lbl, self.microphone)
+        voice_form.addRow(speaker_lbl, self.speaker)
 
         speed_row = QHBoxLayout()
-        speed_row.addWidget(QLabel("Speech speed"))
+        speed_lbl = QLabel("Speech speed")
+        speed_lbl.setObjectName("settingsRowLabel")
+        speed_row.addWidget(speed_lbl)
+        speed_row.addStretch()
         self.speech_speed = QSpinBox()
         self.speech_speed.setObjectName("settingsSpinBox")
         self.speech_speed.setRange(80, 300)
         self.speech_speed.setValue(self._settings.speech_speed)
         self.speech_speed.setSuffix(" words/min")
-        speed_row.addStretch()
         speed_row.addWidget(self.speech_speed)
-        root.addLayout(speed_row)
+        voice_form.addRow(speed_row)
 
+        root.addLayout(voice_form)
+
+        # Appearance section
         root.addWidget(self._section_label("Appearance"))
-        self.compact_mode = QCheckBox("Compact message spacing")
-        self.compact_mode.setObjectName("settingsCheck")
-        self.compact_mode.setChecked(self._settings.compact_messages)
-        root.addWidget(self.compact_mode)
-        theme_row = QHBoxLayout()
-        theme_row.addWidget(QLabel("Theme"))
+        app_form = QFormLayout()
+        app_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        app_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        app_form.setHorizontalSpacing(16)
+        app_form.setVerticalSpacing(10)
+
+        theme_lbl = QLabel("Theme")
+        theme_lbl.setObjectName("settingsRowLabel")
         self.theme = QComboBox()
         self.theme.addItems(["Light", "Dark", "System"])
         self.theme.setCurrentText(self._settings.theme)
-        theme_row.addStretch()
-        theme_row.addWidget(self.theme)
-        root.addLayout(theme_row)
+        self.theme.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        app_form.addRow(theme_lbl, self.theme)
 
+        self.compact_mode = QCheckBox("Compact message spacing")
+        self.compact_mode.setObjectName("settingsCheck")
+        self.compact_mode.setChecked(self._settings.compact_messages)
+        app_form.addRow("", self.compact_mode)
+        root.addLayout(app_form)
+
+        # Notifications section
         root.addWidget(self._section_label("Notifications"))
         self.notifications = QCheckBox("Show desktop notifications")
         self.notifications.setObjectName("settingsCheck")
         self.notifications.setChecked(self._settings.notifications_enabled)
         root.addWidget(self.notifications)
 
+        # Startup section
         root.addWidget(self._section_label("Startup"))
         self.start_with_windows = QCheckBox("Start Astra with Windows")
         self.start_with_windows.setObjectName("settingsCheck")
@@ -412,64 +436,115 @@ class _SettingsDialog(QDialog):
                 font-family: 'Segoe UI', Arial, sans-serif;
             }
             QLabel#settingsTitle {
-                font-size: 18px;
+                font-size: 20px;
                 font-weight: 700;
                 color: #111a35;
             }
             QFrame#settingsSep {
-                background: #ebeaf1;
+                background: #eef1f5;
                 border: none;
                 max-height: 1px;
             }
             QLabel#settingsSection {
                 font-size: 11px;
                 font-weight: 700;
-                color: #8a8fa0;
+                color: #64748b;
                 letter-spacing: 1px;
                 text-transform: uppercase;
-                padding-top: 4px;
+                padding-top: 6px;
             }
             QLabel#settingsRowLabel {
                 font-size: 13px;
-                color: #242139;
+                font-weight: 500;
+                color: #334155;
             }
             QCheckBox#settingsCheck {
                 font-size: 13px;
-                color: #242139;
-                spacing: 8px;
+                color: #1e293b;
+                spacing: 10px;
             }
             QCheckBox#settingsCheck::indicator {
-                width: 16px;
-                height: 16px;
-                border-radius: 4px;
-                border: 1.5px solid #cbc9d8;
+                width: 18px;
+                height: 18px;
+                border-radius: 5px;
+                border: 1.5px solid #cbd5e1;
                 background: #ffffff;
+            }
+            QCheckBox#settingsCheck::indicator:hover {
+                border-color: #347be8;
             }
             QCheckBox#settingsCheck::indicator:checked {
                 background: #347be8;
                 border-color: #347be8;
             }
             QSpinBox#settingsSpinBox {
-                background: #f4f6f9;
-                border: 1px solid #dfe4eb;
+                background: #f8fafc;
+                border: 1.5px solid #cbd5e1;
                 border-radius: 6px;
-                padding: 4px 8px;
-                color: #242139;
+                padding: 6px 10px;
+                color: #0f172a;
                 font-size: 13px;
-                min-width: 130px;
+                min-width: 140px;
+            }
+            QSpinBox#settingsSpinBox:focus {
+                border-color: #347be8;
+                background: #ffffff;
             }
             QComboBox {
-                background: #f4f6f9;
-                border: 1px solid #dfe4eb;
+                background: #f8fafc;
+                border: 1.5px solid #cbd5e1;
                 border-radius: 6px;
-                padding: 5px 8px;
-                color: #242139;
-                min-width: 150px;
+                padding: 6px 12px;
+                color: #0f172a;
+                font-size: 13px;
+                min-width: 180px;
+            }
+            QComboBox:focus, QComboBox:hover {
+                border-color: #347be8;
+            }
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 24px;
+                border-left: none;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 5px solid #64748b;
+                width: 0px;
+                height: 0px;
+                margin-right: 6px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #ffffff;
+                color: #0f172a;
+                selection-background-color: #e2e8f0;
+                selection-color: #0f172a;
+                border: 1.5px solid #cbd5e1;
+                border-radius: 6px;
+                padding: 4px;
+                outline: none;
+            }
+            QComboBox QAbstractItemView::item {
+                min-height: 28px;
+                padding: 4px 8px;
+                border-radius: 4px;
+                color: #0f172a;
+            }
+            QComboBox QAbstractItemView::item:hover {
+                background-color: #f1f5f9;
+                color: #0f172a;
+            }
+            QComboBox QAbstractItemView::item:selected {
+                background-color: #e0eafc;
+                color: #1d4ed8;
             }
             QDialogButtonBox#settingsButtons QPushButton {
-                min-width: 80px;
-                min-height: 32px;
-                border-radius: 7px;
+                min-width: 88px;
+                min-height: 34px;
+                border-radius: 8px;
                 font-weight: 600;
                 font-size: 13px;
                 padding: 0 16px;
@@ -479,13 +554,17 @@ class _SettingsDialog(QDialog):
                 color: #ffffff;
                 border: none;
             }
+            QDialogButtonBox#settingsButtons QPushButton[text="OK"]:hover {
+                background: #342e5a;
+            }
             QDialogButtonBox#settingsButtons QPushButton[text="Cancel"] {
-                background: transparent;
-                color: #57536b;
-                border: 1px solid #dedce8;
+                background: #ffffff;
+                color: #475569;
+                border: 1.5px solid #cbd5e1;
             }
             QDialogButtonBox#settingsButtons QPushButton[text="Cancel"]:hover {
-                background: #f4f6f9;
+                background: #f8fafc;
+                color: #0f172a;
             }
             """
         )
@@ -826,7 +905,7 @@ class MainWindow(QMainWindow):
 
         root.addWidget(content, 1)
 
-        self._apply_style()
+        self._apply_settings()
         self._current_session = self._new_session("New conversation")
         self._add_message("assistant", "Hello! I'm Astra — how can I help you today?")
         if self._settings_load_error:
@@ -1251,7 +1330,326 @@ class MainWindow(QMainWindow):
     def _show_settings(self) -> None:
         dialog = _SettingsDialog(self._settings, self._settings_store, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.conversation.setSpacing(3 if self._settings.compact_messages else 6)
+            self._apply_settings()
+
+    def _apply_settings(self) -> None:
+        """Apply active preferences to the running application."""
+        # Spacing
+        self.conversation.setSpacing(3 if self._settings.compact_messages else 6)
+        # Theme
+        if self._settings.theme == "Dark":
+            self._apply_dark_style()
+        else:
+            self._apply_style()
+
+    def _apply_dark_style(self) -> None:
+        """Dark theme stylesheet."""
+        self.setStyleSheet(
+            """
+            QWidget {
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 13px;
+            }
+            QWidget#centralWidget {
+                background: #0f172a;
+            }
+            QWidget#sidebar {
+                background: #1e293b;
+                border-right: 1px solid #334155;
+            }
+            QLabel#sidebarBrand {
+                color: #f8fafc;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            QLabel#sidebarSection {
+                color: #94a3b8;
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 1.5px;
+                padding: 3px 4px 1px 4px;
+            }
+            QListWidget#chatHistory {
+                background: transparent;
+                border: none;
+                outline: none;
+                color: #cbd5e1;
+                font-size: 12px;
+            }
+            QListWidget#chatHistory::item {
+                padding: 6px 8px;
+                border-radius: 7px;
+                margin: 1px 0;
+            }
+            QListWidget#chatHistory::item:hover {
+                background: #334155;
+                color: #f8fafc;
+            }
+            QListWidget#chatHistory::item:selected {
+                background: #2563eb;
+                color: #ffffff;
+            }
+            QLineEdit#chatSearch {
+                background: #0f172a;
+                border: 1.5px solid #334155;
+                border-radius: 7px;
+                padding: 6px 10px;
+                color: #f8fafc;
+                font-size: 12px;
+            }
+            QLineEdit#chatSearch:focus {
+                border-color: #3b82f6;
+            }
+            QLabel#accountLabel {
+                color: #60a5fa;
+                font-size: 11px;
+                font-weight: 600;
+                padding: 10px 4px 2px 4px;
+                border-top: 1px solid #334155;
+            }
+            QPushButton#sidebarButton {
+                background: transparent;
+                border: none;
+                color: #cbd5e1;
+                text-align: left;
+                padding: 8px 6px;
+                font-size: 12px;
+                border-radius: 7px;
+            }
+            QPushButton#sidebarButton:hover {
+                background: #334155;
+                color: #f8fafc;
+            }
+            QPushButton#sidebarIcon {
+                background: transparent;
+                border: none;
+                color: #94a3b8;
+                font-size: 14px;
+                border-radius: 5px;
+            }
+            QPushButton#sidebarIcon:hover {
+                background: #334155;
+                color: #f8fafc;
+            }
+            QPushButton#newChatButton {
+                background: #2563eb;
+                border: none;
+                border-radius: 8px;
+                color: #ffffff;
+                text-align: left;
+                padding: 9px 10px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton#newChatButton:hover {
+                background: #1d4ed8;
+            }
+            QWidget#contentPanel {
+                background: #1e293b;
+                border: 1px solid #334155;
+                border-radius: 14px;
+                margin: 8px 8px 8px 0;
+            }
+            QWidget#headerBar {
+                background: #1e293b;
+                border-top-left-radius: 14px;
+                border-top-right-radius: 14px;
+            }
+            QFrame#headerSep {
+                background: #334155;
+                border: none;
+            }
+            QLabel#headerChatTitle {
+                color: #f8fafc;
+                font-size: 14px;
+                font-weight: 600;
+            }
+            QLabel#pillReady {
+                background: #064e3b;
+                color: #6ee7b7;
+                border-radius: 12px;
+                padding: 4px 14px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            QLabel#pillThinking {
+                background: #831843;
+                color: #f472b6;
+                border-radius: 12px;
+                padding: 4px 14px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            QLabel#pillListening {
+                background: #1e3a8a;
+                color: #93c5fd;
+                border-radius: 12px;
+                padding: 4px 14px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            QWidget#chatWrapper { background: #1e293b; }
+            QWidget#welcomePanel { background: #1e293b; }
+            QLabel#welcomeTitle {
+                color: #f8fafc;
+                font-size: 36px;
+                font-weight: 400;
+            }
+            QLabel#welcomeSubtitle {
+                color: #64748b;
+                font-size: 36px;
+                font-weight: 400;
+            }
+            QLabel#chipsLabel {
+                color: #94a3b8;
+                font-size: 11px;
+                font-weight: 600;
+                letter-spacing: 0.5px;
+            }
+            QPushButton#suggestionButton {
+                background: #0f172a;
+                border: 1.5px solid #334155;
+                border-radius: 9px;
+                color: #cbd5e1;
+                padding: 8px 12px;
+                font-size: 12px;
+                font-weight: 500;
+                text-align: left;
+            }
+            QPushButton#suggestionButton:hover {
+                background: #1e3a8a;
+                border-color: #3b82f6;
+                color: #ffffff;
+            }
+            QListWidget#conversationList {
+                background: #1e293b;
+                border: none;
+                padding: 14px 16px;
+            }
+            QListWidget#conversationList::item {
+                background: transparent;
+                border: none;
+                color: transparent;
+                padding: 0;
+            }
+            QScrollBar:vertical {
+                background: #0f172a;
+                width: 6px;
+                border-radius: 3px;
+            }
+            QScrollBar::handle:vertical {
+                background: #475569;
+                border-radius: 3px;
+                min-height: 24px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
+            }
+            QFrame#astraBubble {
+                background: #0f172a;
+                border: 1px solid #334155;
+                border-radius: 14px;
+                border-top-left-radius: 4px;
+            }
+            QFrame#userBubble {
+                background: #2563eb;
+                border: 1px solid #1d4ed8;
+                border-radius: 14px;
+                border-top-right-radius: 4px;
+            }
+            QFrame#errorBubble {
+                background: #450a0a;
+                border: 1px solid #7f1d1d;
+                border-radius: 14px;
+            }
+            QLabel#bubbleSender {
+                color: #94a3b8;
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 1px;
+            }
+            QLabel#bubbleTimestamp {
+                color: #64748b;
+                font-size: 10px;
+            }
+            QLabel#bubbleText {
+                color: #f1f5f9;
+                font-size: 13px;
+                line-height: 1.55;
+            }
+            QLabel#bubbleTextUser {
+                color: #ffffff;
+                font-size: 13px;
+                line-height: 1.55;
+            }
+            QLabel#statusLabel {
+                color: #64748b;
+                font-size: 11px;
+                background: #1e293b;
+            }
+            QWidget#composerOuter { background: #1e293b; }
+            QFrame#composerFrame {
+                background: #0f172a;
+                border: 1.5px solid #334155;
+                border-radius: 14px;
+            }
+            QFrame#composerFrame:focus-within {
+                border-color: #3b82f6;
+            }
+            QLineEdit#messageInput {
+                background: transparent;
+                border: none;
+                padding: 8px 6px;
+                color: #f8fafc;
+                font-size: 14px;
+            }
+            QPushButton#sendButton {
+                background: #2563eb;
+                color: #ffffff;
+                border: none;
+                padding: 0 20px;
+                min-height: 36px;
+                min-width: 90px;
+            }
+            QPushButton#sendButton:hover { background: #1d4ed8; }
+            QPushButton#sendButton:disabled {
+                background: #334155;
+                color: #64748b;
+            }
+            QPushButton#iconButton {
+                background: #0f172a;
+                border: 1px solid #334155;
+                color: #94a3b8;
+                font-size: 16px;
+                border-radius: 10px;
+            }
+            QPushButton#iconButton:hover {
+                background: #1e3a8a;
+                border-color: #3b82f6;
+                color: #60a5fa;
+            }
+            QPushButton#iconButtonActive {
+                background: #7f1d1d;
+                border: 1.5px solid #ef4444;
+                color: #fca5a5;
+                font-size: 16px;
+                border-radius: 10px;
+            }
+            QPushButton#ghostButton {
+                background: transparent;
+                color: #94a3b8;
+                border: 1px solid #334155;
+                padding: 0 14px;
+                min-height: 30px;
+                font-size: 12px;
+            }
+            QPushButton#ghostButton:hover {
+                background: #334155;
+                color: #f8fafc;
+            }
+            QPushButton:disabled { opacity: 0.45; }
+            """
+        )
 
     # ── Voice input ───────────────────────────────────────────────────────────
 
