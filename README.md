@@ -142,3 +142,4 @@ The desktop UI features:
 Settings are stored per user under `%LOCALAPPDATA%\\Astra\\settings.json` on
 Windows. Voice device choices remain integration values until the voice services
 are implemented.
+
