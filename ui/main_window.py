@@ -24,6 +24,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -35,6 +36,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -43,6 +45,21 @@ from PySide6.QtWidgets import (
 )
 
 from ui.assistant_interface import AssistantInterface, AssistantResponse, EchoAssistant
+from ui.settings import AstraSettings, SettingsStore
+
+# Voice package — optional dependency (requires SpeechRecognition + PyAudio)
+try:
+    from voice.devices import enumerate_microphones as _enumerate_microphones
+    from voice.exceptions import VoiceError as _VoiceError
+    from voice.listener import SpeechListener as _SpeechListener
+    _VOICE_AVAILABLE = True
+except ImportError:
+    _VOICE_AVAILABLE = False
+    _SpeechListener = None        # type: ignore[assignment,misc]
+    _VoiceError = Exception        # type: ignore[assignment,misc]
+
+    def _enumerate_microphones() -> list[str]:  # type: ignore[misc]
+        return ["Default microphone"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -75,6 +92,35 @@ class _AssistantWorker(QThread):
                 error=str(exc),
             )
         self.response_ready.emit(response)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Voice worker thread
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _VoiceWorker(QThread):
+    """Record one phrase from the microphone on a background thread.
+
+    Emits ``text_ready`` with the transcript on success, or
+    ``error_occurred`` with a human-readable message on any failure.
+    The worker never modifies the UI directly.
+    """
+
+    text_ready = Signal(str)
+    error_occurred = Signal(str)
+
+    def __init__(self, listener: object) -> None:  # listener: _SpeechListener
+        super().__init__()
+        self._listener = listener
+
+    def run(self) -> None:
+        try:
+            text: str = self._listener.listen()  # type: ignore[union-attr]
+            self.text_ready.emit(text)
+        except _VoiceError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Unexpected voice error: {exc}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -249,10 +295,17 @@ class _MessageBubble(QWidget):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class _SettingsDialog(QDialog):
-    """Modal settings panel with a clean, styled layout."""
+    """Modal settings panel backed by the persistent settings store."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        settings: AstraSettings,
+        store: SettingsStore,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._settings = settings
+        self._store = store
         self.setWindowTitle("Astra · Settings")
         self.setModal(True)
         self.setMinimumWidth(380)
@@ -274,34 +327,65 @@ class _SettingsDialog(QDialog):
         sep.setObjectName("settingsSep")
         root.addWidget(sep)
 
-        # Appearance section
+        root.addWidget(self._section_label("Voice"))
+        voice_form = QFormLayout()
+
+        # Microphone — populated from the voice service (real devices when available)
+        self.microphone = QComboBox()
+        mic_devices = _enumerate_microphones()
+        for dev in mic_devices:
+            self.microphone.addItem(dev)
+        if self._settings.microphone not in mic_devices:
+            self.microphone.addItem(self._settings.microphone)
+        self.microphone.setCurrentText(self._settings.microphone)
+
+        # Speaker — static until Phase 5 enumerates audio output devices
+        self.speaker = QComboBox()
+        self.speaker.addItem("Default speaker")
+        if self._settings.speaker not in {"Default speaker"}:
+            self.speaker.addItem(self._settings.speaker)
+        self.speaker.setCurrentText(self._settings.speaker)
+
+        voice_form.addRow("Microphone", self.microphone)
+        voice_form.addRow("Speaker", self.speaker)
+        root.addLayout(voice_form)
+
+        speed_row = QHBoxLayout()
+        speed_row.addWidget(QLabel("Speech speed"))
+        self.speech_speed = QSpinBox()
+        self.speech_speed.setObjectName("settingsSpinBox")
+        self.speech_speed.setRange(80, 300)
+        self.speech_speed.setValue(self._settings.speech_speed)
+        self.speech_speed.setSuffix(" words/min")
+        speed_row.addStretch()
+        speed_row.addWidget(self.speech_speed)
+        root.addLayout(speed_row)
+
         root.addWidget(self._section_label("Appearance"))
         self.compact_mode = QCheckBox("Compact message spacing")
         self.compact_mode.setObjectName("settingsCheck")
+        self.compact_mode.setChecked(self._settings.compact_messages)
         root.addWidget(self.compact_mode)
+        theme_row = QHBoxLayout()
+        theme_row.addWidget(QLabel("Theme"))
+        self.theme = QComboBox()
+        self.theme.addItems(["Light", "Dark", "System"])
+        self.theme.setCurrentText(self._settings.theme)
+        theme_row.addStretch()
+        theme_row.addWidget(self.theme)
+        root.addLayout(theme_row)
 
-        # Notifications section
         root.addWidget(self._section_label("Notifications"))
         self.notifications = QCheckBox("Show desktop notifications")
         self.notifications.setObjectName("settingsCheck")
-        self.notifications.setChecked(True)
+        self.notifications.setChecked(self._settings.notifications_enabled)
         root.addWidget(self.notifications)
 
-        # Typing speed (future placeholder)
-        root.addWidget(self._section_label("Response"))
-        speed_row = QHBoxLayout()
-        speed_row.setSpacing(10)
-        speed_lbl = QLabel("Max response length")
-        speed_lbl.setObjectName("settingsRowLabel")
-        self.max_len = QSpinBox()
-        self.max_len.setRange(100, 4000)
-        self.max_len.setValue(1000)
-        self.max_len.setSuffix(" tokens")
-        self.max_len.setObjectName("settingsSpinBox")
-        speed_row.addWidget(speed_lbl)
-        speed_row.addStretch()
-        speed_row.addWidget(self.max_len)
-        root.addLayout(speed_row)
+        root.addWidget(self._section_label("Startup"))
+        self.start_with_windows = QCheckBox("Start Astra with Windows")
+        self.start_with_windows.setObjectName("settingsCheck")
+        self.start_with_windows.setChecked(self._settings.start_with_windows)
+        root.addWidget(self.start_with_windows)
 
         root.addSpacing(8)
 
@@ -310,7 +394,7 @@ class _SettingsDialog(QDialog):
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.setObjectName("settingsButtons")
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
@@ -374,6 +458,14 @@ class _SettingsDialog(QDialog):
                 font-size: 13px;
                 min-width: 130px;
             }
+            QComboBox {
+                background: #f4f6f9;
+                border: 1px solid #dfe4eb;
+                border-radius: 6px;
+                padding: 5px 8px;
+                color: #242139;
+                min-width: 150px;
+            }
             QDialogButtonBox#settingsButtons QPushButton {
                 min-width: 80px;
                 min-height: 32px;
@@ -398,6 +490,24 @@ class _SettingsDialog(QDialog):
             """
         )
 
+    def _save(self) -> None:
+        settings = AstraSettings(
+            microphone=self.microphone.currentText(),
+            speaker=self.speaker.currentText(),
+            speech_speed=self.speech_speed.value(),
+            notifications_enabled=self.notifications.isChecked(),
+            theme=self.theme.currentText(),
+            start_with_windows=self.start_with_windows.isChecked(),
+            compact_messages=self.compact_mode.isChecked(),
+        )
+        try:
+            self._store.save(settings)
+        except OSError as exc:
+            QMessageBox.critical(self, "Settings not saved", str(exc))
+            return
+        self._settings.__dict__.update(settings.__dict__)
+        self.accept()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Main window
@@ -417,10 +527,19 @@ class MainWindow(QMainWindow):
         self,
         assistant: Optional[AssistantInterface] = None,
         parent: Optional[QWidget] = None,
+        settings_store: SettingsStore | None = None,
     ) -> None:
         super().__init__(parent)
         self._assistant = assistant or EchoAssistant()
+        self._settings_store = settings_store or SettingsStore()
+        self._settings_load_error: str | None = None
+        try:
+            self._settings = self._settings_store.load()
+        except ValueError as exc:
+            self._settings = AstraSettings()
+            self._settings_load_error = str(exc)
         self._worker: Optional[_AssistantWorker] = None
+        self._voice_worker: Optional[_VoiceWorker] = None
         self._sessions: list[dict[str, object]] = []
         self._current_session: dict[str, object] = {}
         self._sidebar_collapsed = False
@@ -685,8 +804,15 @@ class MainWindow(QMainWindow):
         self.microphone_button = QPushButton("🎤")
         self.microphone_button.setObjectName("iconButton")
         self.microphone_button.setFixedSize(40, 40)
-        self.microphone_button.setToolTip("Voice input (coming soon)")
-        self.microphone_button.clicked.connect(self.microphone_requested)
+        if _VOICE_AVAILABLE:
+            self.microphone_button.setToolTip("Click to speak (voice input)")
+            self.microphone_button.clicked.connect(self._start_voice_input)
+        else:
+            self.microphone_button.setToolTip(
+                "Voice input unavailable — install SpeechRecognition and PyAudio"
+            )
+            self.microphone_button.setEnabled(False)
+            self.microphone_button.clicked.connect(self.microphone_requested)
         cmp.addWidget(self.microphone_button)
 
         self.send_button = QPushButton("Send  ↑")
@@ -703,6 +829,8 @@ class MainWindow(QMainWindow):
         self._apply_style()
         self._current_session = self._new_session("New conversation")
         self._add_message("assistant", "Hello! I'm Astra — how can I help you today?")
+        if self._settings_load_error:
+            self.status_label.setText("Settings could not be loaded; defaults are in use")
 
     # ── Stylesheet ────────────────────────────────────────────────────────────
 
@@ -848,6 +976,14 @@ class MainWindow(QMainWindow):
             QLabel#pillThinking {
                 background: #fff0f7;
                 color: #c9246e;
+                border-radius: 12px;
+                padding: 4px 14px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            QLabel#pillListening {
+                background: #eff6ff;
+                color: #1d4ed8;
                 border-radius: 12px;
                 padding: 4px 14px;
                 font-size: 11px;
@@ -1011,6 +1147,17 @@ class MainWindow(QMainWindow):
                 border-color: #e08cbf;
                 color: #c9246e;
             }
+            QPushButton#iconButtonActive {
+                background: #fee2e2;
+                border: 1.5px solid #ef4444;
+                color: #ef4444;
+                font-size: 16px;
+                border-radius: 10px;
+            }
+            QPushButton#iconButtonActive:hover {
+                background: #fecaca;
+                border-color: #dc2626;
+            }
             QPushButton#ghostButton {
                 background: transparent;
                 color: #57536b;
@@ -1102,8 +1249,85 @@ class MainWindow(QMainWindow):
     # ── Settings ──────────────────────────────────────────────────────────────
 
     def _show_settings(self) -> None:
-        dialog = _SettingsDialog(self)
-        dialog.exec()
+        dialog = _SettingsDialog(self._settings, self._settings_store, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.conversation.setSpacing(3 if self._settings.compact_messages else 6)
+
+    # ── Voice input ───────────────────────────────────────────────────────────
+
+    def _start_voice_input(self) -> None:
+        """Begin a microphone recording session on a background thread."""
+        if not _VOICE_AVAILABLE:
+            self._add_message(
+                "error",
+                "Voice input is unavailable. "
+                "Install the required libraries: pip install SpeechRecognition PyAudio",
+            )
+            return
+        # Prevent overlapping requests
+        if self._worker is not None or self._voice_worker is not None:
+            return
+
+        listener = _SpeechListener(microphone_name=self._settings.microphone)  # type: ignore[misc]
+        self._voice_worker = _VoiceWorker(listener)
+        self._voice_worker.text_ready.connect(self._on_voice_text)
+        self._voice_worker.error_occurred.connect(self._on_voice_error)
+        self._voice_worker.finished.connect(self._voice_finished)
+        self._voice_worker.start()
+        self._set_listening_state(True)
+
+    def _set_listening_state(self, listening: bool) -> None:
+        """Toggle the UI between idle and actively-listening states."""
+        if listening:
+            self.status_label.setText("Listening…  Speak now")
+            self.connection_label.setText("● Listening")
+            self.connection_label.setObjectName("pillListening")
+            self.microphone_button.setObjectName("iconButtonActive")
+            self.microphone_button.setToolTip("Listening… (click will cancel after phrase ends)")
+        else:
+            self.status_label.setText("Ready  ·  Type a message to get started")
+            self.connection_label.setText("● Ready")
+            self.connection_label.setObjectName("pillReady")
+            self.microphone_button.setObjectName("iconButton")
+            self.microphone_button.setToolTip("Click to speak (voice input)")
+
+        # Force Qt to re-evaluate objectName-based QSS rules
+        for widget in (self.connection_label, self.microphone_button):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+
+        self.send_button.setEnabled(not listening)
+        self.input.setEnabled(not listening)
+        if _VOICE_AVAILABLE:
+            self.microphone_button.setEnabled(not listening)
+
+    @Slot()
+    def _voice_finished(self) -> None:
+        """Clean up the voice worker after it completes or errors."""
+        worker = self._voice_worker
+        self._voice_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        self._set_listening_state(False)
+
+    def _on_voice_text(self, text: str) -> None:
+        """Handle a successfully recognised transcript.
+
+        The text is placed in the input field and submitted automatically so the
+        full flow — voice → AssistantInterface → response — happens seamlessly.
+        """
+        self._set_listening_state(False)
+        self.input.setText(text)
+        self.input.setFocus()
+        # Submit immediately so the recognised phrase goes to the assistant
+        self._submit_from_input()
+
+    def _on_voice_error(self, message: str) -> None:
+        """Display a voice error in the chat without crashing."""
+        self._set_listening_state(False)
+        self._add_message("error", f"Voice input: {message}")
+        self.status_label.setText("Voice input failed — try again")
+        self.input.setFocus()
 
     # ── Messaging ─────────────────────────────────────────────────────────────
 
@@ -1136,6 +1360,9 @@ class MainWindow(QMainWindow):
         self.connection_label.style().polish(self.connection_label)
         self.send_button.setEnabled(not thinking)
         self.input.setEnabled(not thinking)
+        # Mic button is only available when voice is installed and nothing is active
+        if _VOICE_AVAILABLE:
+            self.microphone_button.setEnabled(not thinking)
 
     @Slot()
     def _assistant_finished(self) -> None:
@@ -1200,10 +1427,11 @@ class MainWindow(QMainWindow):
         self.input.setFocus()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
-        worker = self._worker
-        if worker is not None:
-            worker.blockSignals(True)
-            if worker.isRunning():
-                worker.wait()
-            self._worker = None
+        for worker in (self._worker, self._voice_worker):
+            if worker is not None:
+                worker.blockSignals(True)
+                if worker.isRunning():
+                    worker.wait()
+        self._worker = None
+        self._voice_worker = None
         event.accept()

@@ -54,6 +54,7 @@ Astra/
 ├── ui/
 │   ├── __init__.py            # Desktop UI package exports
 │   ├── assistant_interface.py # UI-to-AI-core response contract
+│   ├── settings.py            # Persistent user settings model and store
 │   └── main_window.py         # PySide6 chat window (sidebar, sessions, bubbles)
 ├── app.py                     # Desktop application entry point
 ├── requirements.txt           # Python dependencies (psutil, Pillow, PySide6)
@@ -133,7 +134,12 @@ The desktop UI features:
 - **Chat bubbles** — user (right-aligned) and Astra (left-aligned) with avatars and timestamps
 - **Welcome panel** with quick-start suggestion chips
 - **Collapsible sidebar** via the ◧ button
-- **Settings dialog** with appearance and notification controls
+- **Settings dialog** with voice, speech speed, appearance, notification, and startup controls
 
 > The current UI uses a temporary echo assistant until the project lead integrates
 > the AI core through `AssistantInterface.process(user_text)`.
+
+Settings are stored per user under `%LOCALAPPDATA%\\Astra\\settings.json` on
+Windows. Voice device choices remain integration values until the voice services
+are implemented.
+
