@@ -24,6 +24,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -35,6 +36,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -43,6 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.assistant_interface import AssistantInterface, AssistantResponse, EchoAssistant
+from ui.settings import AstraSettings, SettingsStore
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -249,10 +252,17 @@ class _MessageBubble(QWidget):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class _SettingsDialog(QDialog):
-    """Modal settings panel with a clean, styled layout."""
+    """Modal settings panel backed by the persistent settings store."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        settings: AstraSettings,
+        store: SettingsStore,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._settings = settings
+        self._store = store
         self.setWindowTitle("Astra · Settings")
         self.setModal(True)
         self.setMinimumWidth(380)
@@ -274,34 +284,63 @@ class _SettingsDialog(QDialog):
         sep.setObjectName("settingsSep")
         root.addWidget(sep)
 
-        # Appearance section
+        root.addWidget(self._section_label("Voice"))
+        voice_form = QFormLayout()
+        self.microphone = QComboBox()
+        self.microphone.addItem("Default microphone")
+        if self._settings.microphone not in {
+            self.microphone.itemText(index)
+            for index in range(self.microphone.count())
+        }:
+            self.microphone.addItem(self._settings.microphone)
+        self.microphone.setCurrentText(self._settings.microphone)
+        self.speaker = QComboBox()
+        self.speaker.addItem("Default speaker")
+        if self._settings.speaker not in {
+            self.speaker.itemText(index) for index in range(self.speaker.count())
+        }:
+            self.speaker.addItem(self._settings.speaker)
+        self.speaker.setCurrentText(self._settings.speaker)
+        voice_form.addRow("Microphone", self.microphone)
+        voice_form.addRow("Speaker", self.speaker)
+        root.addLayout(voice_form)
+
+        speed_row = QHBoxLayout()
+        speed_row.addWidget(QLabel("Speech speed"))
+        self.speech_speed = QSpinBox()
+        self.speech_speed.setObjectName("settingsSpinBox")
+        self.speech_speed.setRange(80, 300)
+        self.speech_speed.setValue(self._settings.speech_speed)
+        self.speech_speed.setSuffix(" words/min")
+        speed_row.addStretch()
+        speed_row.addWidget(self.speech_speed)
+        root.addLayout(speed_row)
+
         root.addWidget(self._section_label("Appearance"))
         self.compact_mode = QCheckBox("Compact message spacing")
         self.compact_mode.setObjectName("settingsCheck")
+        self.compact_mode.setChecked(self._settings.compact_messages)
         root.addWidget(self.compact_mode)
+        theme_row = QHBoxLayout()
+        theme_row.addWidget(QLabel("Theme"))
+        self.theme = QComboBox()
+        self.theme.addItems(["Light", "Dark", "System"])
+        self.theme.setCurrentText(self._settings.theme)
+        theme_row.addStretch()
+        theme_row.addWidget(self.theme)
+        root.addLayout(theme_row)
 
-        # Notifications section
         root.addWidget(self._section_label("Notifications"))
         self.notifications = QCheckBox("Show desktop notifications")
         self.notifications.setObjectName("settingsCheck")
-        self.notifications.setChecked(True)
+        self.notifications.setChecked(self._settings.notifications_enabled)
         root.addWidget(self.notifications)
 
-        # Typing speed (future placeholder)
-        root.addWidget(self._section_label("Response"))
-        speed_row = QHBoxLayout()
-        speed_row.setSpacing(10)
-        speed_lbl = QLabel("Max response length")
-        speed_lbl.setObjectName("settingsRowLabel")
-        self.max_len = QSpinBox()
-        self.max_len.setRange(100, 4000)
-        self.max_len.setValue(1000)
-        self.max_len.setSuffix(" tokens")
-        self.max_len.setObjectName("settingsSpinBox")
-        speed_row.addWidget(speed_lbl)
-        speed_row.addStretch()
-        speed_row.addWidget(self.max_len)
-        root.addLayout(speed_row)
+        root.addWidget(self._section_label("Startup"))
+        self.start_with_windows = QCheckBox("Start Astra with Windows")
+        self.start_with_windows.setObjectName("settingsCheck")
+        self.start_with_windows.setChecked(self._settings.start_with_windows)
+        root.addWidget(self.start_with_windows)
 
         root.addSpacing(8)
 
@@ -310,7 +349,7 @@ class _SettingsDialog(QDialog):
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.setObjectName("settingsButtons")
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
@@ -374,6 +413,14 @@ class _SettingsDialog(QDialog):
                 font-size: 13px;
                 min-width: 130px;
             }
+            QComboBox {
+                background: #f4f6f9;
+                border: 1px solid #dfe4eb;
+                border-radius: 6px;
+                padding: 5px 8px;
+                color: #242139;
+                min-width: 150px;
+            }
             QDialogButtonBox#settingsButtons QPushButton {
                 min-width: 80px;
                 min-height: 32px;
@@ -398,6 +445,24 @@ class _SettingsDialog(QDialog):
             """
         )
 
+    def _save(self) -> None:
+        settings = AstraSettings(
+            microphone=self.microphone.currentText(),
+            speaker=self.speaker.currentText(),
+            speech_speed=self.speech_speed.value(),
+            notifications_enabled=self.notifications.isChecked(),
+            theme=self.theme.currentText(),
+            start_with_windows=self.start_with_windows.isChecked(),
+            compact_messages=self.compact_mode.isChecked(),
+        )
+        try:
+            self._store.save(settings)
+        except OSError as exc:
+            QMessageBox.critical(self, "Settings not saved", str(exc))
+            return
+        self._settings.__dict__.update(settings.__dict__)
+        self.accept()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Main window
@@ -417,9 +482,17 @@ class MainWindow(QMainWindow):
         self,
         assistant: Optional[AssistantInterface] = None,
         parent: Optional[QWidget] = None,
+        settings_store: SettingsStore | None = None,
     ) -> None:
         super().__init__(parent)
         self._assistant = assistant or EchoAssistant()
+        self._settings_store = settings_store or SettingsStore()
+        self._settings_load_error: str | None = None
+        try:
+            self._settings = self._settings_store.load()
+        except ValueError as exc:
+            self._settings = AstraSettings()
+            self._settings_load_error = str(exc)
         self._worker: Optional[_AssistantWorker] = None
         self._sessions: list[dict[str, object]] = []
         self._current_session: dict[str, object] = {}
@@ -703,6 +776,8 @@ class MainWindow(QMainWindow):
         self._apply_style()
         self._current_session = self._new_session("New conversation")
         self._add_message("assistant", "Hello! I'm Astra — how can I help you today?")
+        if self._settings_load_error:
+            self.status_label.setText("Settings could not be loaded; defaults are in use")
 
     # ── Stylesheet ────────────────────────────────────────────────────────────
 
@@ -1102,8 +1177,9 @@ class MainWindow(QMainWindow):
     # ── Settings ──────────────────────────────────────────────────────────────
 
     def _show_settings(self) -> None:
-        dialog = _SettingsDialog(self)
-        dialog.exec()
+        dialog = _SettingsDialog(self._settings, self._settings_store, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.conversation.setSpacing(3 if self._settings.compact_messages else 6)
 
     # ── Messaging ─────────────────────────────────────────────────────────────
 
