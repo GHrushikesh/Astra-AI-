@@ -47,6 +47,18 @@ from PySide6.QtWidgets import (
 from ui.assistant_interface import AssistantInterface, AssistantResponse, EchoAssistant
 from ui.settings import AstraSettings, SettingsStore
 
+# TTS package
+try:
+    from tts.synthesizer import SpeechSynthesizer as _SpeechSynthesizer
+    from tts.synthesizer import enumerate_voices as _enumerate_voices
+    _TTS_AVAILABLE = True
+except ImportError:
+    _TTS_AVAILABLE = False
+    _SpeechSynthesizer = None  # type: ignore[assignment,misc]
+
+    def _enumerate_voices() -> list[str]:  # type: ignore[misc]
+        return ["Default speaker"]
+
 # Voice package — optional dependency (requires SpeechRecognition + PyAudio)
 try:
     from voice.devices import enumerate_microphones as _enumerate_microphones
@@ -121,6 +133,33 @@ class _VoiceWorker(QThread):
             self.error_occurred.emit(str(exc))
         except Exception as exc:
             self.error_occurred.emit(f"Unexpected voice error: {exc}")
+
+
+class _TTSWorker(QThread):
+    """Run speech synthesis on a background thread."""
+
+    speech_finished = Signal()
+
+    def __init__(self, synthesizer: object, text: str) -> None:
+        super().__init__()
+        self._synthesizer = synthesizer
+        self._text = text
+
+    def run(self) -> None:
+        try:
+            if self._synthesizer:
+                self._synthesizer.speak(self._text)  # type: ignore[union-attr]
+        except Exception:
+            pass
+        finally:
+            self.speech_finished.emit()
+
+    def stop(self) -> None:
+        try:
+            if self._synthesizer:
+                self._synthesizer.stop()  # type: ignore[union-attr]
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -345,10 +384,12 @@ class _SettingsDialog(QDialog):
         self.microphone.setCurrentText(self._settings.microphone)
         self.microphone.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-        # Speaker — static until audio output device enumeration
+        # Speaker — populated from TTS voice enumeration
         self.speaker = QComboBox()
-        self.speaker.addItem("Default speaker")
-        if self._settings.speaker not in {"Default speaker"}:
+        spk_devices = _enumerate_voices()
+        for spk in spk_devices:
+            self.speaker.addItem(spk)
+        if self._settings.speaker not in spk_devices:
             self.speaker.addItem(self._settings.speaker)
         self.speaker.setCurrentText(self._settings.speaker)
         self.speaker.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -550,12 +591,12 @@ class _SettingsDialog(QDialog):
                 padding: 0 16px;
             }
             QDialogButtonBox#settingsButtons QPushButton[text="OK"] {
-                background: #211d3d;
+                background: #347be8;
                 color: #ffffff;
                 border: none;
             }
             QDialogButtonBox#settingsButtons QPushButton[text="OK"]:hover {
-                background: #342e5a;
+                background: #2563c7;
             }
             QDialogButtonBox#settingsButtons QPushButton[text="Cancel"] {
                 background: #ffffff;
@@ -619,6 +660,11 @@ class MainWindow(QMainWindow):
             self._settings_load_error = str(exc)
         self._worker: Optional[_AssistantWorker] = None
         self._voice_worker: Optional[_VoiceWorker] = None
+        self._tts_worker: Optional[_TTSWorker] = None
+        self._tts_synthesizer = _SpeechSynthesizer(
+            voice_name=self._settings.speaker,
+            speed_wpm=self._settings.speech_speed,
+        ) if _TTS_AVAILABLE else None
         self._sessions: list[dict[str, object]] = []
         self._current_session: dict[str, object] = {}
         self._sidebar_collapsed = False
@@ -759,6 +805,11 @@ class MainWindow(QMainWindow):
 
         self.connection_label = QLabel("● Ready")
         self.connection_label.setObjectName("pillReady")
+        self.connection_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.connection_label.setFixedSize(78, 30)
+        self.connection_label.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         hl.addWidget(self.connection_label)
 
         self.settings_button = QPushButton("⚙  Settings")
@@ -1047,24 +1098,27 @@ class MainWindow(QMainWindow):
             QLabel#pillReady {
                 background: #e9fbf2;
                 color: #16834f;
+                border: 1px solid #c8f0d9;
                 border-radius: 12px;
-                padding: 4px 14px;
+                padding: 0;
                 font-size: 11px;
                 font-weight: 600;
             }
             QLabel#pillThinking {
-                background: #fff0f7;
-                color: #c9246e;
+                background: #fff7ed;
+                color: #c2410c;
+                border: 1px solid #fed7aa;
                 border-radius: 12px;
-                padding: 4px 14px;
+                padding: 0;
                 font-size: 11px;
                 font-weight: 600;
             }
             QLabel#pillListening {
                 background: #eff6ff;
                 color: #1d4ed8;
+                border: 1px solid #bfdbfe;
                 border-radius: 12px;
-                padding: 4px 14px;
+                padding: 0;
                 font-size: 11px;
                 font-weight: 600;
             }
@@ -1171,20 +1225,21 @@ class MainWindow(QMainWindow):
 
             /* ── Status bar ───────────────────────────────────── */
             QLabel#statusLabel {
-                color: #a0a8bc;
+                color: #8290a6;
                 font-size: 11px;
-                background: #ffffff;
+                background: transparent;
+                padding: 4px 24px;
             }
 
             /* ── Composer ─────────────────────────────────────── */
             QWidget#composerOuter { background: #ffffff; }
             QFrame#composerFrame {
                 background: #ffffff;
-                border: 1.5px solid #e4e7ed;
+                border: 1px solid #d9e2ee;
                 border-radius: 14px;
             }
             QFrame#composerFrame:focus-within {
-                border-color: #347be8;
+                border: 2px solid #347be8;
             }
             QLineEdit#messageInput {
                 background: transparent;
@@ -1201,30 +1256,30 @@ class MainWindow(QMainWindow):
                 font-size: 13px;
             }
             QPushButton#sendButton {
-                background: #211d3d;
+                background: #347be8;
                 color: #ffffff;
                 border: none;
                 padding: 0 20px;
                 min-height: 36px;
                 min-width: 90px;
             }
-            QPushButton#sendButton:hover { background: #342e5a; }
-            QPushButton#sendButton:pressed { background: #160f2e; }
+            QPushButton#sendButton:hover { background: #2563c7; }
+            QPushButton#sendButton:pressed { background: #1d4ed8; }
             QPushButton#sendButton:disabled {
-                background: #dddbe8;
-                color: #a09cb4;
+                background: #cbd5e1;
+                color: #64748b;
             }
             QPushButton#iconButton {
                 background: #f4f3f9;
-                border: 1px solid #e2e0eb;
-                color: #6f6a82;
+                border: 1px solid #d9e2ee;
+                color: #52627a;
                 font-size: 16px;
                 border-radius: 10px;
             }
             QPushButton#iconButton:hover {
-                background: #fff0f7;
-                border-color: #e08cbf;
-                color: #c9246e;
+                background: #eff6ff;
+                border-color: #93c5fd;
+                color: #2563c7;
             }
             QPushButton#iconButtonActive {
                 background: #fee2e2;
@@ -1341,6 +1396,10 @@ class MainWindow(QMainWindow):
             self._apply_dark_style()
         else:
             self._apply_style()
+        # Update TTS synthesizer settings
+        if self._tts_synthesizer:
+            self._tts_synthesizer.voice_name = self._settings.speaker
+            self._tts_synthesizer.speed_wpm = self._settings.speech_speed
 
     def _apply_dark_style(self) -> None:
         """Dark theme stylesheet."""
@@ -1467,24 +1526,27 @@ class MainWindow(QMainWindow):
             QLabel#pillReady {
                 background: #064e3b;
                 color: #6ee7b7;
+                border: 1px solid #047857;
                 border-radius: 12px;
-                padding: 4px 14px;
+                padding: 0;
                 font-size: 11px;
                 font-weight: 600;
             }
             QLabel#pillThinking {
-                background: #831843;
-                color: #f472b6;
+                background: #7c2d12;
+                color: #fdba74;
+                border: 1px solid #9a3412;
                 border-radius: 12px;
-                padding: 4px 14px;
+                padding: 0;
                 font-size: 11px;
                 font-weight: 600;
             }
             QLabel#pillListening {
                 background: #1e3a8a;
                 color: #93c5fd;
+                border: 1px solid #2563eb;
                 border-radius: 12px;
-                padding: 4px 14px;
+                padding: 0;
                 font-size: 11px;
                 font-weight: 600;
             }
@@ -1583,18 +1645,19 @@ class MainWindow(QMainWindow):
                 line-height: 1.55;
             }
             QLabel#statusLabel {
-                color: #64748b;
+                color: #94a3b8;
                 font-size: 11px;
-                background: #1e293b;
+                background: transparent;
+                padding: 4px 24px;
             }
             QWidget#composerOuter { background: #1e293b; }
             QFrame#composerFrame {
                 background: #0f172a;
-                border: 1.5px solid #334155;
+                border: 1px solid #475569;
                 border-radius: 14px;
             }
             QFrame#composerFrame:focus-within {
-                border-color: #3b82f6;
+                border: 2px solid #60a5fa;
             }
             QLineEdit#messageInput {
                 background: transparent;
@@ -1613,19 +1676,19 @@ class MainWindow(QMainWindow):
             }
             QPushButton#sendButton:hover { background: #1d4ed8; }
             QPushButton#sendButton:disabled {
-                background: #334155;
-                color: #64748b;
+                background: #475569;
+                color: #94a3b8;
             }
             QPushButton#iconButton {
                 background: #0f172a;
-                border: 1px solid #334155;
+                border: 1px solid #475569;
                 color: #94a3b8;
                 font-size: 16px;
                 border-radius: 10px;
             }
             QPushButton#iconButton:hover {
                 background: #1e3a8a;
-                border-color: #3b82f6;
+                border-color: #60a5fa;
                 color: #60a5fa;
             }
             QPushButton#iconButtonActive {
@@ -1774,10 +1837,32 @@ class MainWindow(QMainWindow):
         if response.success:
             self._add_message("assistant", response.text)
             self.status_label.setText("Ready")
+            self._speak_text(response.text)
         else:
             self._add_message("error", response.error or "The assistant is unavailable.")
             self.status_label.setText("Error — see message above for details")
         self.input.setFocus()
+
+    def _speak_text(self, text: str) -> None:
+        """Speak response text using TTS outside the UI thread."""
+        if not _TTS_AVAILABLE or not self._tts_synthesizer or not text.strip():
+            return
+        # Cancel any active TTS speech
+        if self._tts_worker is not None:
+            self._tts_worker.stop()
+            self._tts_worker.wait()
+            self._tts_worker = None
+
+        self._tts_worker = _TTSWorker(self._tts_synthesizer, text)
+        self._tts_worker.speech_finished.connect(self._tts_finished)
+        self._tts_worker.start()
+
+    @Slot()
+    def _tts_finished(self) -> None:
+        worker = self._tts_worker
+        self._tts_worker = None
+        if worker is not None:
+            worker.deleteLater()
 
     def _add_message(self, sender: str, text: str, record: bool = True) -> None:
         if record:
@@ -1825,11 +1910,14 @@ class MainWindow(QMainWindow):
         self.input.setFocus()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
-        for worker in (self._worker, self._voice_worker):
+        if self._tts_worker is not None:
+            self._tts_worker.stop()
+        for worker in (self._worker, self._voice_worker, self._tts_worker):
             if worker is not None:
                 worker.blockSignals(True)
                 if worker.isRunning():
                     worker.wait()
         self._worker = None
         self._voice_worker = None
+        self._tts_worker = None
         event.accept()
