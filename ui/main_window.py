@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import (
@@ -333,6 +334,30 @@ class _MessageBubble(QWidget):
 # Settings dialog
 # ─────────────────────────────────────────────────────────────────────────────
 
+_ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+
+
+def _ensure_ui_assets() -> None:
+    """Ensure SVG icons required for clean UI elements exist."""
+    _ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    check_file = _ASSETS_DIR / "check_white.svg"
+    if not check_file.exists():
+        check_file.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" '
+            'stroke="#ffffff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">'
+            '<polyline points="20 6 9 17 4 12"/></svg>',
+            encoding="utf-8",
+        )
+    chevron_file = _ASSETS_DIR / "chevron_down.svg"
+    if not chevron_file.exists():
+        chevron_file.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" '
+            'stroke="#64748b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">'
+            '<polyline points="6 9 12 15 18 9"/></svg>',
+            encoding="utf-8",
+        )
+
+
 class _SettingsDialog(QDialog):
     """Modal settings panel backed by the persistent settings store."""
 
@@ -470,55 +495,66 @@ class _SettingsDialog(QDialog):
         return lbl
 
     def _style(self) -> None:
+        _ensure_ui_assets()
+        check_path = (_ASSETS_DIR / "check_white.svg").as_posix()
+        chevron_path = (_ASSETS_DIR / "chevron_down.svg").as_posix()
+
         self.setStyleSheet(
-            """
-            QDialog {
+            f"""
+            QDialog {{
                 background: #ffffff;
                 font-family: 'Segoe UI', Arial, sans-serif;
-            }
-            QLabel#settingsTitle {
+            }}
+            QLabel#settingsTitle {{
                 font-size: 20px;
                 font-weight: 700;
                 color: #111a35;
-            }
-            QFrame#settingsSep {
+            }}
+            QFrame#settingsSep {{
                 background: #eef1f5;
                 border: none;
                 max-height: 1px;
-            }
-            QLabel#settingsSection {
+            }}
+            QLabel#settingsSection {{
                 font-size: 11px;
                 font-weight: 700;
                 color: #64748b;
                 letter-spacing: 1px;
                 text-transform: uppercase;
                 padding-top: 6px;
-            }
-            QLabel#settingsRowLabel {
+            }}
+            QLabel#settingsRowLabel {{
                 font-size: 13px;
                 font-weight: 500;
                 color: #334155;
-            }
-            QCheckBox#settingsCheck {
+            }}
+            QCheckBox#settingsCheck {{
                 font-size: 13px;
                 color: #1e293b;
                 spacing: 10px;
-            }
-            QCheckBox#settingsCheck::indicator {
+            }}
+            QCheckBox#settingsCheck::indicator {{
                 width: 18px;
                 height: 18px;
                 border-radius: 5px;
                 border: 1.5px solid #cbd5e1;
                 background: #ffffff;
-            }
-            QCheckBox#settingsCheck::indicator:hover {
+            }}
+            QCheckBox#settingsCheck::indicator:hover {{
                 border-color: #347be8;
-            }
-            QCheckBox#settingsCheck::indicator:checked {
+                background: #f0f6ff;
+            }}
+            QCheckBox#settingsCheck::indicator:checked {{
                 background: #347be8;
                 border-color: #347be8;
-            }
-            QSpinBox#settingsSpinBox {
+                image: url("{check_path}");
+            }}
+            QCheckBox#settingsCheck::indicator:checked:hover {{
+                background: #2563c7;
+                border-color: #2563c7;
+                image: url("{check_path}");
+            }}
+            QSpinBox#settingsSpinBox {{
                 background: #f8fafc;
                 border: 1.5px solid #cbd5e1;
                 border-radius: 6px;
@@ -526,87 +562,84 @@ class _SettingsDialog(QDialog):
                 color: #0f172a;
                 font-size: 13px;
                 min-width: 140px;
-            }
-            QSpinBox#settingsSpinBox:focus {
+            }}
+            QSpinBox#settingsSpinBox:focus {{
                 border-color: #347be8;
                 background: #ffffff;
-            }
-            QComboBox {
+            }}
+            QComboBox {{
                 background: #f8fafc;
                 border: 1.5px solid #cbd5e1;
                 border-radius: 6px;
-                padding: 6px 12px;
+                padding: 6px 30px 6px 12px;
                 color: #0f172a;
                 font-size: 13px;
                 min-width: 180px;
-            }
-            QComboBox:focus, QComboBox:hover {
+            }}
+            QComboBox:focus, QComboBox:hover {{
                 border-color: #347be8;
-            }
-            QComboBox::drop-down {
+            }}
+            QComboBox::drop-down {{
                 subcontrol-origin: padding;
-                subcontrol-position: top right;
-                width: 24px;
+                subcontrol-position: center right;
+                width: 26px;
                 border-left: none;
-            }
-            QComboBox::down-arrow {
-                image: none;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 5px solid #64748b;
-                width: 0px;
-                height: 0px;
-                margin-right: 6px;
-            }
-            QComboBox QAbstractItemView {
+            }}
+            QComboBox::down-arrow {{
+                image: url("{chevron_path}");
+                width: 12px;
+                height: 12px;
+                margin-right: 8px;
+            }}
+            QComboBox QAbstractItemView {{
                 background-color: #ffffff;
                 color: #0f172a;
-                selection-background-color: #e2e8f0;
-                selection-color: #0f172a;
+                selection-background-color: #e0eafc;
+                selection-color: #1d4ed8;
                 border: 1.5px solid #cbd5e1;
                 border-radius: 6px;
                 padding: 4px;
                 outline: none;
-            }
-            QComboBox QAbstractItemView::item {
+            }}
+            QComboBox QAbstractItemView::item {{
                 min-height: 28px;
                 padding: 4px 8px;
                 border-radius: 4px;
                 color: #0f172a;
-            }
-            QComboBox QAbstractItemView::item:hover {
+            }}
+            QComboBox QAbstractItemView::item:hover {{
                 background-color: #f1f5f9;
                 color: #0f172a;
-            }
-            QComboBox QAbstractItemView::item:selected {
+            }}
+            QComboBox QAbstractItemView::item:selected {{
                 background-color: #e0eafc;
                 color: #1d4ed8;
-            }
-            QDialogButtonBox#settingsButtons QPushButton {
+            }}
+            QDialogButtonBox#settingsButtons QPushButton {{
                 min-width: 88px;
                 min-height: 34px;
                 border-radius: 8px;
                 font-weight: 600;
                 font-size: 13px;
                 padding: 0 16px;
-            }
-            QDialogButtonBox#settingsButtons QPushButton[text="OK"] {
+            }}
+            QDialogButtonBox#settingsButtons QPushButton[text="OK"] {{
                 background: #347be8;
                 color: #ffffff;
                 border: none;
-            }
-            QDialogButtonBox#settingsButtons QPushButton[text="OK"]:hover {
+            }}
+            QDialogButtonBox#settingsButtons QPushButton[text="OK"]:hover {{
                 background: #2563c7;
-            }
-            QDialogButtonBox#settingsButtons QPushButton[text="Cancel"] {
+            }}
+            QDialogButtonBox#settingsButtons QPushButton[text="Cancel"] {{
                 background: #ffffff;
                 color: #475569;
                 border: 1.5px solid #cbd5e1;
-            }
-            QDialogButtonBox#settingsButtons QPushButton[text="Cancel"]:hover {
+            }}
+            QDialogButtonBox#settingsButtons QPushButton[text="Cancel"]:hover {{
                 background: #f8fafc;
                 color: #0f172a;
-            }
+            }}
             """
         )
 
