@@ -73,6 +73,7 @@ Astra/
 │
 ├── app.py                    # Application Entry Point
 ├── requirements.txt          # Python Dependencies
+├── .gitignore
 └── README.md
 ```
 
@@ -90,10 +91,18 @@ pip install -r requirements.txt
 python -m unittest discover -s tests -v
 ```
 
-#### 3. Launch Desktop Application
+#### 3. Run the Desktop UI
 ```powershell
 python app.py
 ```
+
+The desktop UI features:
+- **Sidebar** with conversation history, search, new-chat, settings, and help
+- **Session management** — sessions are auto-titled from the first user message and can be restored
+- **Chat bubbles** — user (right-aligned) and Astra (left-aligned) with avatars and timestamps
+- **Welcome panel** with quick-start suggestion chips
+- **Collapsible sidebar** via the ◧ button
+- **Settings dialog** with appearance, voice, speech speed, startup, and notification controls
 
 ---
 
