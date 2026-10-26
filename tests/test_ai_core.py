@@ -57,10 +57,28 @@ class TestLLMClient(unittest.TestCase):
         mock_post.assert_called_once()
         args, kwargs = mock_post.call_args
         self.assertIn("key=test-gemini-key", args[0])
-        self.assertIn("gemini-1.5-flash:generateContent", args[0])
+        self.assertIn("gemini-2.5-flash-lite:generateContent", args[0])
         payload = kwargs["json"]
         self.assertIn("contents", payload)
         self.assertIn("systemInstruction", payload)
+
+    @patch("ai.client.requests.post")
+    def test_gemini_404_auto_fallback(self, mock_post):
+        resp_404 = MagicMock()
+        resp_404.status_code = 404
+        resp_404.json.return_value = {"error": {"message": "models/deprecated is not found"}}
+
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+        resp_200.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": "Fallback succeeded!"}]}}]
+        }
+        mock_post.side_effect = [resp_404, resp_200]
+
+        client = LLMClient(provider="Google Gemini", api_key="test-gemini-key", model="gemini-old-model")
+        result = client.generate("Hi")
+        self.assertEqual(result, "Fallback succeeded!")
+        self.assertEqual(mock_post.call_count, 2)
 
     @patch("ai.client.requests.post")
     def test_openai_api_call(self, mock_post):

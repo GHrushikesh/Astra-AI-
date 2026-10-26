@@ -22,7 +22,7 @@ class AstraSettings:
     compact_messages: bool = False
     llm_provider: str = "Google Gemini"
     llm_api_key: str = ""
-    llm_model: str = "gemini-1.5-flash"
+    llm_model: str = "gemini-2.5-flash-lite"
     llm_endpoint: str = ""
 
 

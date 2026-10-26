@@ -1,7 +1,9 @@
-"""Main Astra desktop window — polished light-theme redesign with sidebar."""
+"""Main Astra desktop window — Apple-inspired, premium, fluid desktop experience."""
 
 from __future__ import annotations
 
+import math
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -19,6 +21,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QLinearGradient,
     QPainter,
     QPainterPath,
     QPixmap,
@@ -31,6 +34,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QGraphicsDropShadowEffect,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -84,7 +88,145 @@ except ImportError:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Worker thread
+# Reduced-Motion and System Theme Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _prefers_reduced_motion() -> bool:
+    """Detect whether the user prefers reduced motion (Windows setting or env var)."""
+    if os.environ.get("ASTRA_REDUCED_MOTION", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    try:
+        import ctypes
+        # SPI_GETCLIENTAREAANIMATION = 0x1042
+        enabled = ctypes.c_int(1)
+        if ctypes.windll.user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(enabled), 0):
+            return enabled.value == 0
+    except Exception:
+        pass
+    return False
+
+
+def _detect_system_dark_mode() -> bool:
+    """Detect Windows system dark mode from registry."""
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+        )
+        val, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+        winreg.CloseKey(key)
+        return val == 0
+    except Exception:
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UI Assets Management
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+
+
+def _ensure_ui_assets() -> None:
+    """Ensure crisp vector SVGs required for Apple-grade UI elements exist."""
+    _ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+
+    assets = {
+        "check_white.svg": (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" '
+            'stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">'
+            '<polyline points="20 6 9 17 4 12"/></svg>'
+        ),
+        "chevron_down.svg": (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" '
+            'stroke="#86868b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">'
+            '<polyline points="6 9 12 15 18 9"/></svg>'
+        ),
+        "chevron_down_dark.svg": (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" '
+            'stroke="#a1a1a6" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">'
+            '<polyline points="6 9 12 15 18 9"/></svg>'
+        ),
+        "search.svg": (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" '
+            'stroke="#86868b" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">'
+            '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>'
+        ),
+        "plus.svg": (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" '
+            'stroke="#ffffff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">'
+            '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>'
+        ),
+        "sidebar_toggle.svg": (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" '
+            'stroke="#6e6e73" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+            '<rect x="3" y="3" width="18" height="18" rx="4" ry="4"/><line x1="9" y1="3" x2="9" y2="21"/></svg>'
+        ),
+    }
+
+    for name, content in assets.items():
+        file_path = _ASSETS_DIR / name
+        if not file_path.exists():
+            file_path.write_text(content, encoding="utf-8")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Avatar Helper
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_avatar_pixmap(letter: str, bg: str, fg: str, size: int = 30, is_astra: bool = False) -> QPixmap:
+    """Render a crisp, antialiased Apple-style avatar with geometry."""
+    size = max(16, size)
+    pix = QPixmap(size, size)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    path = QPainterPath()
+    path.addEllipse(0, 0, size, size)
+
+    if is_astra:
+        # Refined Apple astral emblem
+        grad = QLinearGradient(0, 0, size, size)
+        grad.setColorAt(0.0, QColor("#0071e3"))
+        grad.setColorAt(1.0, QColor("#005bb5"))
+        p.fillPath(path, grad)
+
+        # Draw an 8-point geometric star compass mark
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor("#ffffff"))
+        center = size / 2.0
+        r_outer = size * 0.32
+        r_inner = size * 0.12
+        star_path = QPainterPath()
+        for i in range(16):
+            angle = i * (math.pi / 8.0) - (math.pi / 2.0)
+            r = r_outer if i % 2 == 0 else r_inner
+            x = center + r * math.cos(angle)
+            y = center + r * math.sin(angle)
+            if i == 0:
+                star_path.moveTo(x, y)
+            else:
+                star_path.lineTo(x, y)
+        star_path.closeSubpath()
+        p.drawPath(star_path)
+    else:
+        p.fillPath(path, QColor(bg))
+        p.setPen(QColor(fg))
+        font_size = max(9, int(size * 0.38))
+        font = QFont("Segoe UI")
+        font.setPixelSize(font_size)
+        font.setWeight(QFont.Weight.DemiBold)
+        p.setFont(font)
+        p.drawText(QRect(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, letter)
+
+    p.end()
+    return pix
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Worker Threads
 # ─────────────────────────────────────────────────────────────────────────────
 
 class _AssistantWorker(QThread):
@@ -115,22 +257,13 @@ class _AssistantWorker(QThread):
         self.response_ready.emit(response)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Voice worker thread
-# ─────────────────────────────────────────────────────────────────────────────
-
 class _VoiceWorker(QThread):
-    """Record one phrase from the microphone on a background thread.
-
-    Emits ``text_ready`` with the transcript on success, or
-    ``error_occurred`` with a human-readable message on any failure.
-    The worker never modifies the UI directly.
-    """
+    """Record one phrase from the microphone on a background thread."""
 
     text_ready = Signal(str)
     error_occurred = Signal(str)
 
-    def __init__(self, listener: object) -> None:  # listener: _SpeechListener
+    def __init__(self, listener: object) -> None:
         super().__init__()
         self._listener = listener
 
@@ -172,29 +305,7 @@ class _TTSWorker(QThread):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Avatar helper
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _make_avatar_pixmap(letter: str, bg: str, fg: str, size: int = 32) -> QPixmap:
-    """Render a crisp round avatar with a centred letter."""
-    size = max(16, size)
-    pix = QPixmap(size, size)
-    pix.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pix)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    path = QPainterPath()
-    path.addEllipse(0, 0, size, size)
-    p.fillPath(path, QColor(bg))
-    p.setPen(QColor(fg))
-    font_size = max(8, int(size * 0.38))
-    p.setFont(QFont("Segoe UI", font_size, QFont.Weight.Bold))
-    p.drawText(QRect(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, letter)
-    p.end()
-    return pix
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Typing-indicator dots
+# Animated Typing Dots
 # ─────────────────────────────────────────────────────────────────────────────
 
 class _TypingDot(QWidget):
@@ -202,32 +313,31 @@ class _TypingDot(QWidget):
 
     def __init__(self, delay_ms: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFixedSize(8, 8)
+        self.setFixedSize(6, 6)
         self._anim = QPropertyAnimation(self, b"geometry")
-        self._anim.setDuration(700)
+        self._anim.setDuration(600)
         self._anim.setLoopCount(-1)
         self._anim.setEasingCurve(QEasingCurve.Type.SineCurve)
         self._delay = delay_ms
 
     def start(self) -> None:
         geo = self.geometry()
-        self._anim.setStartValue(QRect(geo.x(), geo.y(), 8, 8))
-        self._anim.setEndValue(QRect(geo.x(), geo.y() - 6, 8, 8))
+        self._anim.setStartValue(QRect(geo.x(), geo.y(), 6, 6))
+        self._anim.setEndValue(QRect(geo.x(), geo.y() - 4, 6, 6))
         self._anim.setStartDelay(self._delay)
         self._anim.start()
 
     def stop(self) -> None:
         self._anim.stop()
-        # Reset position
         geo = self.geometry()
-        self.setGeometry(QRect(geo.x(), geo.y(), 8, 8))
+        self.setGeometry(QRect(geo.x(), geo.y(), 6, 6))
 
     def paintEvent(self, _event) -> None:  # type: ignore[override]
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setBrush(QColor("#347be8"))
+        p.setBrush(QColor("#0071e3"))
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(0, 0, 8, 8)
+        p.drawEllipse(0, 0, 6, 6)
 
 
 class _TypingIndicator(QWidget):
@@ -236,15 +346,15 @@ class _TypingIndicator(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 8, 4, 8)
-        layout.setSpacing(5)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
         self._dots: list[_TypingDot] = []
-        for delay in (0, 160, 320):
+        for delay in (0, 140, 280):
             dot = _TypingDot(delay, self)
             self._dots.append(dot)
             layout.addWidget(dot)
         layout.addStretch()
-        self.setFixedHeight(30)
+        self.setFixedHeight(24)
 
     def start(self) -> None:
         for d in self._dots:
@@ -256,13 +366,19 @@ class _TypingIndicator(QWidget):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Message bubble
+# Message Bubble
 # ─────────────────────────────────────────────────────────────────────────────
 
 class _MessageBubble(QWidget):
-    """Chat message with avatar, sender name, body text, and timestamp."""
+    """Refined Apple-inspired conversational message bubble."""
 
-    def __init__(self, sender: str, text: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        sender: str,
+        text: str,
+        is_dark: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         is_user = sender == "user"
         is_error = sender == "error"
@@ -272,30 +388,33 @@ class _MessageBubble(QWidget):
         timestamp = datetime.now().strftime("%H:%M")
 
         outer = QHBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(0, 2, 0, 2)
         outer.setSpacing(0)
 
         # Avatar
         av = QLabel()
         if is_user:
-            av.setPixmap(_make_avatar_pixmap("Y", "#211d3d", "#ffffff"))
+            av_bg = "#48484a" if is_dark else "#e5e5ea"
+            av_fg = "#ffffff" if is_dark else "#1d1d1f"
+            av.setPixmap(_make_avatar_pixmap("Y", av_bg, av_fg, 26))
         elif is_error:
-            av.setPixmap(_make_avatar_pixmap("!", "#e53e3e", "#ffffff"))
+            av.setPixmap(_make_avatar_pixmap("!", "#ff453a" if is_dark else "#ff3b30", "#ffffff", 26))
         else:
-            av.setPixmap(_make_avatar_pixmap("A", "#347be8", "#ffffff"))
-        av.setFixedSize(36, 36)
+            av.setPixmap(_make_avatar_pixmap("A", "#0a84ff" if is_dark else "#0071e3", "#ffffff", 26, is_astra=True))
+        av.setFixedSize(26, 26)
         av.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        # Card
+        # Card Frame
         card = QFrame()
         card.setObjectName("userBubble" if is_user else ("errorBubble" if is_error else "astraBubble"))
         card_lay = QVBoxLayout(card)
         card_lay.setContentsMargins(14, 10, 14, 10)
-        card_lay.setSpacing(3)
+        card_lay.setSpacing(4)
 
         # Header row: sender name + timestamp
         header_row = QHBoxLayout()
         header_row.setSpacing(8)
+        header_row.setContentsMargins(0, 0, 0, 0)
         name_lbl = QLabel(display_name)
         name_lbl.setObjectName("bubbleSender")
         time_lbl = QLabel(timestamp)
@@ -305,9 +424,7 @@ class _MessageBubble(QWidget):
         header_row.addStretch()
 
         text_lbl = QLabel(text)
-        text_lbl.setObjectName("bubbleText")
-        if is_user:
-            text_lbl.setObjectName("bubbleTextUser")
+        text_lbl.setObjectName("bubbleTextUser" if is_user else ("bubbleTextError" if is_error else "bubbleText"))
         text_lbl.setWordWrap(True)
         text_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         text_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -315,25 +432,19 @@ class _MessageBubble(QWidget):
         card_lay.addLayout(header_row)
         card_lay.addWidget(text_lbl)
 
-        shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(10)
-        shadow.setOffset(0, 2)
-        shadow.setColor(QColor(0, 0, 0, 16))
-        card.setGraphicsEffect(shadow)
-
-        # Layout: user → right-aligned, assistant/error → left-aligned
+        # Alignment
         if is_user:
-            outer.setContentsMargins(60, 3, 4, 3)
+            outer.setContentsMargins(50, 1, 4, 1)
             inner = QHBoxLayout()
-            inner.setSpacing(10)
+            inner.setSpacing(8)
             inner.addStretch(1)
             inner.addWidget(card)
             inner.addWidget(av)
             outer.addLayout(inner)
         else:
-            outer.setContentsMargins(4, 3, 60, 3)
+            outer.setContentsMargins(4, 1, 50, 1)
             inner = QHBoxLayout()
-            inner.setSpacing(10)
+            inner.setSpacing(8)
             inner.addWidget(av)
             inner.addWidget(card)
             inner.addStretch(1)
@@ -341,35 +452,11 @@ class _MessageBubble(QWidget):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Settings dialog
+# Settings Dialog (macOS Preferences Style)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_ASSETS_DIR = Path(__file__).resolve().parent / "assets"
-
-
-def _ensure_ui_assets() -> None:
-    """Ensure SVG icons required for clean UI elements exist."""
-    _ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-    check_file = _ASSETS_DIR / "check_white.svg"
-    if not check_file.exists():
-        check_file.write_text(
-            '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" '
-            'stroke="#ffffff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">'
-            '<polyline points="20 6 9 17 4 12"/></svg>',
-            encoding="utf-8",
-        )
-    chevron_file = _ASSETS_DIR / "chevron_down.svg"
-    if not chevron_file.exists():
-        chevron_file.write_text(
-            '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" '
-            'stroke="#64748b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">'
-            '<polyline points="6 9 12 15 18 9"/></svg>',
-            encoding="utf-8",
-        )
-
-
 class _SettingsDialog(QDialog):
-    """Modal settings panel backed by the persistent settings store."""
+    """Modal preferences panel styled with Apple macOS System Settings aesthetics."""
 
     def __init__(
         self,
@@ -380,39 +467,49 @@ class _SettingsDialog(QDialog):
         super().__init__(parent)
         self._settings = settings
         self._store = store
-        self.setWindowTitle("Astra · Settings")
+        self.setWindowTitle("Astra · Preferences")
         self.setModal(True)
-        self.setMinimumWidth(380)
+        self.setMinimumWidth(440)
         self._build()
-        self._style()
+        is_dark = (
+            self._settings.theme == "Dark"
+            or (self._settings.theme == "System" and _detect_system_dark_mode())
+        )
+        self._style(is_dark=is_dark)
 
     def _build(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(28, 24, 28, 20)
-        root.setSpacing(16)
+        root.setContentsMargins(24, 20, 24, 20)
+        root.setSpacing(14)
 
-        # Title
-        title = QLabel("Settings")
+        # Header
+        title = QLabel("Preferences")
         title.setObjectName("settingsTitle")
         root.addWidget(title)
 
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setObjectName("settingsSep")
-        root.addWidget(sep)
+        subtitle = QLabel("Configure Google Gemini AI, audio devices, and Astra behavior.")
+        subtitle.setObjectName("settingsSubtitle")
+        root.addWidget(subtitle)
 
-        # Google Gemini AI section
-        root.addWidget(self._section_label("Google Gemini API"))
-        ai_desc = QLabel("Enter your Google Gemini API key to activate AI intelligence and natural language controls.")
+        # ── Group 1: Google Gemini AI ─────────────────────────────────
+        card_ai = QFrame()
+        card_ai.setObjectName("settingsCard")
+        lay_ai = QVBoxLayout(card_ai)
+        lay_ai.setContentsMargins(14, 12, 14, 12)
+        lay_ai.setSpacing(8)
+
+        ai_sec = QLabel("Google Gemini API")
+        ai_sec.setObjectName("settingsSection")
+        lay_ai.addWidget(ai_sec)
+
+        ai_desc = QLabel("Enter your Google Gemini API key to activate natural language intelligence.")
+        ai_desc.setObjectName("settingsCaption")
         ai_desc.setWordWrap(True)
-        ai_desc.setStyleSheet("color: #64748b; font-size: 12px; padding: 2px 0 4px 0;")
-        root.addWidget(ai_desc)
+        lay_ai.addWidget(ai_desc)
 
         ai_form = QFormLayout()
-        ai_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        ai_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        ai_form.setHorizontalSpacing(16)
-        ai_form.setVerticalSpacing(10)
+        ai_form.setHorizontalSpacing(12)
+        ai_form.setVerticalSpacing(8)
 
         self.llm_api_key = QLineEdit()
         self.llm_api_key.setObjectName("settingsInput")
@@ -420,35 +517,46 @@ class _SettingsDialog(QDialog):
         self.llm_api_key.setPlaceholderText("Paste Gemini API key (AIzaSy...)")
         self.llm_api_key.setText(self._settings.llm_api_key)
 
-        key_lbl = QLabel("Gemini API Key")
+        key_lbl = QLabel("API Key")
         key_lbl.setObjectName("settingsRowLabel")
         ai_form.addRow(key_lbl, self.llm_api_key)
-        root.addLayout(ai_form)
+        lay_ai.addLayout(ai_form)
+        root.addWidget(card_ai)
 
-        # Internal compatibility attributes
+        # Hidden compatibility fields
         self.llm_provider = QComboBox()
         self.llm_provider.addItems(["Google Gemini", "OpenAI", "Groq", "Ollama / Local", "Anthropic", "Custom"])
         self.llm_provider.setCurrentText(self._settings.llm_provider or "Google Gemini")
         self.llm_provider.hide()
 
+        initial_model = self._settings.llm_model or "gemini-2.5-flash-lite"
+        if initial_model in ("gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-exp", "gemini-2.5-flash", ""):
+            initial_model = "gemini-2.5-flash-lite"
         self.llm_model = QLineEdit()
-        self.llm_model.setText(self._settings.llm_model or "gemini-1.5-flash")
+        self.llm_model.setText(initial_model)
         self.llm_model.hide()
 
         self.llm_endpoint = QLineEdit()
         self.llm_endpoint.setText(self._settings.llm_endpoint or "")
         self.llm_endpoint.hide()
 
-        # Voice section
-        root.addWidget(self._section_label("Voice"))
-        voice_form = QFormLayout()
-        voice_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        voice_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        voice_form.setHorizontalSpacing(16)
-        voice_form.setVerticalSpacing(10)
+        # ── Group 2: Audio & Voice ───────────────────────────────────
+        card_audio = QFrame()
+        card_audio.setObjectName("settingsCard")
+        lay_audio = QVBoxLayout(card_audio)
+        lay_audio.setContentsMargins(14, 12, 14, 12)
+        lay_audio.setSpacing(8)
 
-        # Microphone — populated from the voice service (real devices when available)
+        voice_sec = QLabel("Voice & Speech")
+        voice_sec.setObjectName("settingsSection")
+        lay_audio.addWidget(voice_sec)
+
+        voice_form = QFormLayout()
+        voice_form.setHorizontalSpacing(12)
+        voice_form.setVerticalSpacing(8)
+
         self.microphone = QComboBox()
+        self.microphone.setObjectName("settingsCombo")
         mic_devices = _enumerate_microphones()
         for dev in mic_devices:
             self.microphone.addItem(dev)
@@ -457,8 +565,8 @@ class _SettingsDialog(QDialog):
         self.microphone.setCurrentText(self._settings.microphone)
         self.microphone.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-        # Speaker — populated from TTS voice enumeration
         self.speaker = QComboBox()
+        self.speaker.setObjectName("settingsCombo")
         spk_devices = _enumerate_voices()
         for spk in spk_devices:
             self.speaker.addItem(spk)
@@ -483,23 +591,32 @@ class _SettingsDialog(QDialog):
         self.speech_speed.setObjectName("settingsSpinBox")
         self.speech_speed.setRange(80, 300)
         self.speech_speed.setValue(self._settings.speech_speed)
-        self.speech_speed.setSuffix(" words/min")
+        self.speech_speed.setSuffix(" wpm")
         speed_row.addWidget(self.speech_speed)
         voice_form.addRow(speed_row)
 
-        root.addLayout(voice_form)
+        lay_audio.addLayout(voice_form)
+        root.addWidget(card_audio)
 
-        # Appearance section
-        root.addWidget(self._section_label("Appearance"))
+        # ── Group 3: Appearance & System ──────────────────────────────
+        card_app = QFrame()
+        card_app.setObjectName("settingsCard")
+        lay_app = QVBoxLayout(card_app)
+        lay_app.setContentsMargins(14, 12, 14, 12)
+        lay_app.setSpacing(8)
+
+        app_sec = QLabel("Appearance & Behavior")
+        app_sec.setObjectName("settingsSection")
+        lay_app.addWidget(app_sec)
+
         app_form = QFormLayout()
-        app_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        app_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        app_form.setHorizontalSpacing(16)
-        app_form.setVerticalSpacing(10)
+        app_form.setHorizontalSpacing(12)
+        app_form.setVerticalSpacing(8)
 
         theme_lbl = QLabel("Theme")
         theme_lbl.setObjectName("settingsRowLabel")
         self.theme = QComboBox()
+        self.theme.setObjectName("settingsCombo")
         self.theme.addItems(["Light", "Dark", "System"])
         self.theme.setCurrentText(self._settings.theme)
         self.theme.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -509,25 +626,23 @@ class _SettingsDialog(QDialog):
         self.compact_mode.setObjectName("settingsCheck")
         self.compact_mode.setChecked(self._settings.compact_messages)
         app_form.addRow("", self.compact_mode)
-        root.addLayout(app_form)
 
-        # Notifications section
-        root.addWidget(self._section_label("Notifications"))
         self.notifications = QCheckBox("Show desktop notifications")
         self.notifications.setObjectName("settingsCheck")
         self.notifications.setChecked(self._settings.notifications_enabled)
-        root.addWidget(self.notifications)
+        app_form.addRow("", self.notifications)
 
-        # Startup section
-        root.addWidget(self._section_label("Startup"))
         self.start_with_windows = QCheckBox("Start Astra with Windows")
         self.start_with_windows.setObjectName("settingsCheck")
         self.start_with_windows.setChecked(self._settings.start_with_windows)
-        root.addWidget(self.start_with_windows)
+        app_form.addRow("", self.start_with_windows)
 
-        root.addSpacing(8)
+        lay_app.addLayout(app_form)
+        root.addWidget(card_app)
 
-        # Buttons
+        root.addSpacing(4)
+
+        # Action Buttons
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -536,175 +651,148 @@ class _SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
-    @staticmethod
-    def _section_label(text: str) -> QLabel:
-        lbl = QLabel(text)
-        lbl.setObjectName("settingsSection")
-        return lbl
-
-    def _style(self) -> None:
+    def _style(self, is_dark: bool = False) -> None:
         _ensure_ui_assets()
         check_path = (_ASSETS_DIR / "check_white.svg").as_posix()
-        chevron_path = (_ASSETS_DIR / "chevron_down.svg").as_posix()
+        chevron_path = (_ASSETS_DIR / ("chevron_down_dark.svg" if is_dark else "chevron_down.svg")).as_posix()
+
+        bg_dlg = "#1c1c1e" if is_dark else "#f2f2f6"
+        bg_card = "#28282c" if is_dark else "#ffffff"
+        border_card = "#38383c" if is_dark else "#e5e5ea"
+        text_title = "#f5f5f7" if is_dark else "#1d1d1f"
+        text_sub = "#a1a1a6" if is_dark else "#86868b"
+        text_lbl = "#f5f5f7" if is_dark else "#1d1d1f"
+        input_bg = "#1e1e22" if is_dark else "#ffffff"
+        input_border = "#3a3a3c" if is_dark else "#d2d2d7"
+        accent = "#0a84ff" if is_dark else "#0071e3"
 
         self.setStyleSheet(
             f"""
             QDialog {{
-                background: #ffffff;
-                font-family: 'Segoe UI', Arial, sans-serif;
+                background: {bg_dlg};
+                font-family: -apple-system, 'SF Pro Text', 'Segoe UI', Arial, sans-serif;
             }}
             QLabel#settingsTitle {{
-                font-size: 20px;
-                font-weight: 700;
-                color: #111a35;
+                font-size: 18px;
+                font-weight: 600;
+                color: {text_title};
+                letter-spacing: -0.2px;
             }}
-            QFrame#settingsSep {{
-                background: #eef1f5;
-                border: none;
-                max-height: 1px;
+            QLabel#settingsSubtitle {{
+                font-size: 12px;
+                color: {text_sub};
+                padding-bottom: 2px;
+            }}
+            QFrame#settingsCard {{
+                background: {bg_card};
+                border: 1px solid {border_card};
+                border-radius: 10px;
             }}
             QLabel#settingsSection {{
                 font-size: 11px;
-                font-weight: 700;
-                color: #64748b;
-                letter-spacing: 1px;
+                font-weight: 600;
+                color: {text_sub};
+                letter-spacing: 0.8px;
                 text-transform: uppercase;
-                padding-top: 6px;
+            }}
+            QLabel#settingsCaption {{
+                font-size: 11.5px;
+                color: {text_sub};
+                line-height: 1.4;
             }}
             QLabel#settingsRowLabel {{
-                font-size: 13px;
+                font-size: 12.5px;
                 font-weight: 500;
-                color: #334155;
-            }}
-            QCheckBox#settingsCheck {{
-                font-size: 13px;
-                color: #1e293b;
-                spacing: 10px;
-            }}
-            QCheckBox#settingsCheck::indicator {{
-                width: 18px;
-                height: 18px;
-                border-radius: 5px;
-                border: 1.5px solid #cbd5e1;
-                background: #ffffff;
-            }}
-            QCheckBox#settingsCheck::indicator:hover {{
-                border-color: #347be8;
-                background: #f0f6ff;
-            }}
-            QCheckBox#settingsCheck::indicator:checked {{
-                background: #347be8;
-                border-color: #347be8;
-                image: url("{check_path}");
-            }}
-            QCheckBox#settingsCheck::indicator:checked:hover {{
-                background: #2563c7;
-                border-color: #2563c7;
-                image: url("{check_path}");
-            }}
-            QSpinBox#settingsSpinBox {{
-                background: #f8fafc;
-                border: 1.5px solid #cbd5e1;
-                border-radius: 6px;
-                padding: 6px 10px;
-                color: #0f172a;
-                font-size: 13px;
-                min-width: 140px;
-            }}
-            QSpinBox#settingsSpinBox:focus {{
-                border-color: #347be8;
-                background: #ffffff;
-            }}
-            QComboBox {{
-                background: #f8fafc;
-                border: 1.5px solid #cbd5e1;
-                border-radius: 6px;
-                padding: 6px 30px 6px 12px;
-                color: #0f172a;
-                font-size: 13px;
-                min-width: 180px;
-            }}
-            QComboBox:focus, QComboBox:hover {{
-                border-color: #347be8;
-            }}
-            QComboBox::drop-down {{
-                subcontrol-origin: padding;
-                subcontrol-position: center right;
-                width: 26px;
-                border-left: none;
-            }}
-            QComboBox::down-arrow {{
-                image: url("{chevron_path}");
-                width: 12px;
-                height: 12px;
-                margin-right: 8px;
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: #ffffff;
-                color: #0f172a;
-                selection-background-color: #e0eafc;
-                selection-color: #1d4ed8;
-                border: 1.5px solid #cbd5e1;
-                border-radius: 6px;
-                padding: 4px;
-                outline: none;
-            }}
-            QComboBox QAbstractItemView::item {{
-                min-height: 28px;
-                padding: 4px 8px;
-                border-radius: 4px;
-                color: #0f172a;
-            }}
-            QComboBox QAbstractItemView::item:hover {{
-                background-color: #f1f5f9;
-                color: #0f172a;
-            }}
-            QComboBox QAbstractItemView::item:selected {{
-                background-color: #e0eafc;
-                color: #1d4ed8;
+                color: {text_lbl};
             }}
             QLineEdit#settingsInput {{
-                background: #f8fafc;
-                border: 1.5px solid #cbd5e1;
-                border-radius: 6px;
-                padding: 6px 12px;
-                color: #0f172a;
-                font-size: 13px;
-                min-width: 180px;
+                background: {input_bg};
+                border: 1px solid {input_border};
+                border-radius: 7px;
+                padding: 6px 10px;
+                font-size: 12.5px;
+                color: {text_lbl};
             }}
             QLineEdit#settingsInput:focus {{
-                border-color: #347be8;
-                background: #ffffff;
+                border: 1.5px solid {accent};
+            }}
+            QComboBox#settingsCombo {{
+                background: {input_bg};
+                border: 1px solid {input_border};
+                border-radius: 7px;
+                padding: 5px 28px 5px 10px;
+                font-size: 12.5px;
+                color: {text_lbl};
+            }}
+            QComboBox#settingsCombo:focus {{
+                border: 1.5px solid {accent};
+            }}
+            QComboBox#settingsCombo::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: center right;
+                width: 24px;
+                border-left: none;
+            }}
+            QComboBox#settingsCombo::down-arrow {{
+                image: url("{chevron_path}");
+                width: 10px;
+                height: 10px;
+                margin-right: 8px;
+            }}
+            QSpinBox#settingsSpinBox {{
+                background: {input_bg};
+                border: 1px solid {input_border};
+                border-radius: 7px;
+                padding: 4px 8px;
+                font-size: 12px;
+                color: {text_lbl};
+            }}
+            QCheckBox#settingsCheck {{
+                font-size: 12.5px;
+                color: {text_lbl};
+                spacing: 8px;
+            }}
+            QCheckBox#settingsCheck::indicator {{
+                width: 16px;
+                height: 16px;
+                border: 1px solid {input_border};
+                border-radius: 4px;
+                background: {input_bg};
+            }}
+            QCheckBox#settingsCheck::indicator:checked {{
+                background: {accent};
+                border-color: {accent};
+                image: url("{check_path}");
             }}
             QDialogButtonBox#settingsButtons QPushButton {{
-                min-width: 88px;
-                min-height: 34px;
-                border-radius: 8px;
-                font-weight: 600;
-                font-size: 13px;
-                padding: 0 16px;
+                border-radius: 7px;
+                padding: 6px 14px;
+                font-size: 12px;
+                font-weight: 500;
+                min-width: 68px;
             }}
-            QDialogButtonBox#settingsButtons QPushButton[text="OK"] {{
-                background: #347be8;
-                color: #ffffff;
+            QDialogButtonBox#settingsButtons QPushButton[text="OK"],
+            QDialogButtonBox#settingsButtons QPushButton:default {{
+                background: {accent};
                 border: none;
-            }}
-            QDialogButtonBox#settingsButtons QPushButton[text="OK"]:hover {{
-                background: #2563c7;
+                color: #ffffff;
+                font-weight: 600;
             }}
             QDialogButtonBox#settingsButtons QPushButton[text="Cancel"] {{
-                background: #ffffff;
-                color: #475569;
-                border: 1.5px solid #cbd5e1;
-            }}
-            QDialogButtonBox#settingsButtons QPushButton[text="Cancel"]:hover {{
-                background: #f8fafc;
-                color: #0f172a;
+                background: transparent;
+                border: 1px solid {input_border};
+                color: {text_lbl};
             }}
             """
         )
 
     def _save(self) -> None:
+        raw_model = self.llm_model.text().strip()
+        if not raw_model or raw_model in ("gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-exp", "gemini-2.5-flash"):
+            sanitized_model = "gemini-2.5-flash-lite"
+        else:
+            sanitized_model = raw_model
+
         settings = AstraSettings(
             microphone=self.microphone.currentText(),
             speaker=self.speaker.currentText(),
@@ -715,7 +803,7 @@ class _SettingsDialog(QDialog):
             compact_messages=self.compact_mode.isChecked(),
             llm_provider=self.llm_provider.currentText(),
             llm_api_key=self.llm_api_key.text().strip(),
-            llm_model=self.llm_model.text().strip(),
+            llm_model=sanitized_model,
             llm_endpoint=self.llm_endpoint.text().strip(),
         )
         try:
@@ -728,18 +816,16 @@ class _SettingsDialog(QDialog):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Main window
+# Main Window (Apple-Inspired Architecture)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
-    """Astra's conversation window — light theme with sidebar and session history."""
+    """Astra desktop window — Apple-inspired, calm, premium interaction design."""
 
     microphone_requested = Signal()
     message_submitted = Signal(str)
 
-    # Accent colours mirrored in QSS so Python logic can stay in sync
-    _ACCENT = "#347be8"
-    _DARK   = "#211d3d"
+    _ACCENT = "#0071e3"
 
     def __init__(
         self,
@@ -755,12 +841,14 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             self._settings = AstraSettings()
             self._settings_load_error = str(exc)
+
         if assistant is not None:
             self._assistant = assistant
         elif _AI_AVAILABLE and _AstraAICore is not None:
             self._assistant = _AstraAICore(settings_store=self._settings_store)
         else:
             self._assistant = EchoAssistant()
+
         self._worker: Optional[_AssistantWorker] = None
         self._voice_worker: Optional[_VoiceWorker] = None
         self._tts_worker: Optional[_TTSWorker] = None
@@ -768,17 +856,19 @@ class MainWindow(QMainWindow):
             voice_name=self._settings.speaker,
             speed_wpm=self._settings.speech_speed,
         ) if _TTS_AVAILABLE else None
+
         self._sessions: list[dict[str, object]] = []
         self._current_session: dict[str, object] = {}
         self._sidebar_collapsed = False
-        self._build_ui()
+        self._sidebar_anim: Optional[QPropertyAnimation] = None
 
-    # ── UI construction ───────────────────────────────────────────────────────
+        _ensure_ui_assets()
+        self._build_ui()
 
     def _build_ui(self) -> None:
         self.setWindowTitle("Astra")
-        self.setMinimumSize(900, 600)
-        self.resize(1180, 760)
+        self.setMinimumSize(880, 580)
+        self.resize(1140, 740)
 
         central = QWidget(self)
         central.setObjectName("centralWidget")
@@ -788,55 +878,63 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ── Sidebar ────────────────────────────────────────────────────
+        # ── Sidebar ───────────────────────────────────────────────────
         self.sidebar = QWidget()
         self.sidebar.setObjectName("sidebar")
-        self.sidebar.setFixedWidth(210)
+        self.sidebar.setFixedWidth(220)
         sb = QVBoxLayout(self.sidebar)
-        sb.setContentsMargins(14, 18, 14, 14)
-        sb.setSpacing(4)
+        sb.setContentsMargins(12, 16, 12, 14)
+        sb.setSpacing(6)
 
-        # Sidebar header
+        # Brand header
         sb_header = QHBoxLayout()
+        sb_header.setSpacing(8)
         sb_logo = QLabel()
-        sb_logo.setPixmap(_make_avatar_pixmap("A", self._ACCENT, "#ffffff", 28))
-        sb_logo.setFixedSize(28, 28)
+        sb_logo.setPixmap(_make_avatar_pixmap("A", self._ACCENT, "#ffffff", 26, is_astra=True))
+        sb_logo.setFixedSize(26, 26)
         sb_header.addWidget(sb_logo)
+
         sb_brand = QLabel("Astra")
         sb_brand.setObjectName("sidebarBrand")
         sb_header.addWidget(sb_brand)
         sb_header.addStretch()
+
         self._collapse_btn = QPushButton("◧")
         self._collapse_btn.setObjectName("sidebarIcon")
         self._collapse_btn.setFixedSize(26, 26)
-        self._collapse_btn.setToolTip("Collapse sidebar")
+        self._collapse_btn.setToolTip("Toggle sidebar")
         self._collapse_btn.clicked.connect(self._toggle_sidebar)
         sb_header.addWidget(self._collapse_btn)
         sb.addLayout(sb_header)
-        sb.addSpacing(20)
+
+        sb.addSpacing(10)
 
         # New conversation button
         new_chat_btn = QPushButton("+  New Conversation")
         new_chat_btn.setObjectName("newChatButton")
+        new_chat_btn.setFixedHeight(34)
         new_chat_btn.clicked.connect(self._start_new_chat)
         sb.addWidget(new_chat_btn)
-        sb.addSpacing(6)
 
-        # Search toggle
-        self._search_btn = QPushButton("Search Conversations")
-        self._search_btn.setObjectName("sidebarButton")
-        self._search_btn.clicked.connect(self._toggle_chat_search)
-        sb.addWidget(self._search_btn)
+        sb.addSpacing(4)
 
+        # Spotlight search input
         self.chat_search = QLineEdit()
         self.chat_search.setObjectName("chatSearch")
-        self.chat_search.setPlaceholderText("Search chats…")
+        self.chat_search.setPlaceholderText("Search conversations…")
+        self.chat_search.setFixedHeight(28)
         self.chat_search.textChanged.connect(self._filter_chat_history)
-        self.chat_search.hide()
         sb.addWidget(self.chat_search)
-        sb.addSpacing(14)
 
-        # Chat history list
+        # Hidden search button maintained for API compatibility
+        self._search_btn = QPushButton("Search")
+        self._search_btn.setObjectName("sidebarButton")
+        self._search_btn.clicked.connect(self._toggle_chat_search)
+        self._search_btn.hide()
+
+        sb.addSpacing(10)
+
+        # Recent conversations section
         history_lbl = QLabel("Recent")
         history_lbl.setObjectName("sidebarSection")
         sb.addWidget(history_lbl)
@@ -847,30 +945,35 @@ class MainWindow(QMainWindow):
         self.chat_history.itemClicked.connect(self._restore_chat)
         sb.addWidget(self.chat_history, 1)
 
-        # Discover (placeholder)
+        # Discover button
         discover_btn = QPushButton("Discover")
         discover_btn.setObjectName("sidebarButton")
         sb.addWidget(discover_btn)
 
-        sb.addStretch()
+        # Bottom section
+        sb.addSpacing(4)
+        sep_sb = QFrame()
+        sep_sb.setObjectName("sidebarSep")
+        sep_sb.setFrameShape(QFrame.Shape.HLine)
+        sep_sb.setFixedHeight(1)
+        sb.addWidget(sep_sb)
 
-        # Bottom area
-        settings_btn = QPushButton("Settings")
+        settings_btn = QPushButton("Preferences…")
         settings_btn.setObjectName("sidebarButton")
         settings_btn.clicked.connect(self._show_settings)
         sb.addWidget(settings_btn)
 
-        help_btn = QPushButton("Help Center")
+        help_btn = QPushButton("Help & Support")
         help_btn.setObjectName("sidebarButton")
         sb.addWidget(help_btn)
 
-        account = QLabel("Astra Workspace")
+        account = QLabel("Astra Assistant · v1.0")
         account.setObjectName("accountLabel")
         sb.addWidget(account)
 
         root.addWidget(self.sidebar)
 
-        # ── Content panel ──────────────────────────────────────────────
+        # ── Content Panel (Elevated Canvas) ───────────────────────────
         content = QWidget()
         content.setObjectName("contentPanel")
         content_layout = QVBoxLayout(content)
@@ -880,44 +983,33 @@ class MainWindow(QMainWindow):
         # Header bar
         header_bar = QWidget()
         header_bar.setObjectName("headerBar")
-        header_bar.setFixedHeight(58)
+        header_bar.setFixedHeight(50)
         hl = QHBoxLayout(header_bar)
-        hl.setContentsMargins(20, 0, 20, 0)
-        hl.setSpacing(12)
+        hl.setContentsMargins(18, 0, 18, 0)
+        hl.setSpacing(10)
 
-        self._expand_btn = QPushButton(">")
-        self._expand_btn.setObjectName("ghostButton")
-        self._expand_btn.setFixedSize(30, 30)
-        self._expand_btn.setToolTip("Expand sidebar")
+        self._expand_btn = QPushButton("◨")
+        self._expand_btn.setObjectName("sidebarIcon")
+        self._expand_btn.setFixedSize(26, 26)
+        self._expand_btn.setToolTip("Show sidebar")
         self._expand_btn.clicked.connect(self._toggle_sidebar)
-        self._expand_btn.hide()  # Hidden until sidebar is collapsed
+        self._expand_btn.hide()
         hl.addWidget(self._expand_btn)
 
-        hdr_logo = QLabel()
-        hdr_logo.setPixmap(_make_avatar_pixmap("A", self._ACCENT, "#ffffff", 30))
-        hdr_logo.setFixedSize(30, 30)
-        hl.addWidget(hdr_logo)
-
-        hdr_col = QVBoxLayout()
-        hdr_col.setSpacing(0)
         self._chat_title_lbl = QLabel("New conversation")
         self._chat_title_lbl.setObjectName("headerChatTitle")
-        hdr_col.addWidget(self._chat_title_lbl)
-        hl.addLayout(hdr_col)
+        hl.addWidget(self._chat_title_lbl)
         hl.addStretch()
 
-        self.connection_label = QLabel("Ready")
+        self.connection_label = QLabel("● Ready")
         self.connection_label.setObjectName("pillReady")
         self.connection_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.connection_label.setFixedSize(68, 28)
-        self.connection_label.setSizePolicy(
-            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
-        )
+        self.connection_label.setFixedHeight(24)
         hl.addWidget(self.connection_label)
 
-        self.settings_button = QPushButton("Settings")
+        self.settings_button = QPushButton("Preferences")
         self.settings_button.setObjectName("ghostButton")
-        self.settings_button.setToolTip("Open Astra settings")
+        self.settings_button.setFixedHeight(26)
         self.settings_button.clicked.connect(self._show_settings)
         hl.addWidget(self.settings_button)
 
@@ -936,43 +1028,39 @@ class MainWindow(QMainWindow):
         cwl.setContentsMargins(0, 0, 0, 0)
         cwl.setSpacing(0)
 
-        # Welcome panel
+        # Welcome panel (Apple Intelligence style centered hero)
         self.welcome_panel = QWidget()
         self.welcome_panel.setObjectName("welcomePanel")
         wl = QVBoxLayout(self.welcome_panel)
-        wl.setContentsMargins(32, 56, 32, 24)
-        wl.setSpacing(6)
+        wl.setContentsMargins(32, 44, 32, 20)
+        wl.setSpacing(8)
 
         wlc_logo = QLabel()
-        wlc_logo.setPixmap(_make_avatar_pixmap("A", self._ACCENT, "#ffffff", 52))
-        wlc_logo.setFixedSize(52, 52)
+        wlc_logo.setPixmap(_make_avatar_pixmap("A", self._ACCENT, "#ffffff", 44, is_astra=True))
+        wlc_logo.setFixedSize(44, 44)
         wl.addWidget(wlc_logo, 0, Qt.AlignmentFlag.AlignHCenter)
-        wl.addSpacing(4)
+        wl.addSpacing(2)
 
-        wlc_title = QLabel("Built to think.")
+        wlc_title = QLabel("Astra")
         wlc_title.setObjectName("welcomeTitle")
         wlc_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         wl.addWidget(wlc_title)
 
-        wlc_sub = QLabel("Designed to assist.")
+        wlc_sub = QLabel("How can I help you today?")
         wlc_sub.setObjectName("welcomeSubtitle")
         wlc_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         wl.addWidget(wlc_sub)
 
-        wl.addSpacing(28)
-
-        # Suggestion chips
-        chips_lbl = QLabel("Try asking:")
-        chips_lbl.setObjectName("chipsLabel")
-        wl.addWidget(chips_lbl)
+        wl.addSpacing(20)
 
         chips_row = QHBoxLayout()
-        chips_row.setSpacing(10)
+        chips_row.setSpacing(8)
+        chips_row.addStretch()
         suggestions = [
-            ("Generate Plan", "Generate a plan for my week"),
-            ("Summarize Text", "Summarize the following text:"),
-            ("Explain Concept", "Explain what machine learning is"),
-            ("Open Application", "Open Notepad"),
+            ("Create study plan", "Generate a focused weekly study plan"),
+            ("Summarize text", "Summarize the key points of:"),
+            ("Explain concept", "Explain how neural networks learn in simple terms"),
+            ("Open application", "Open Notepad"),
         ]
         for chip_label, chip_value in suggestions:
             btn = QPushButton(chip_label)
@@ -990,6 +1078,7 @@ class MainWindow(QMainWindow):
 
         cwl.addWidget(self.welcome_panel)
 
+        # Conversation list
         self.conversation = QListWidget()
         self.conversation.setObjectName("conversationList")
         self.conversation.setAccessibleName("Conversation")
@@ -1003,40 +1092,36 @@ class MainWindow(QMainWindow):
         cwl.addWidget(self.conversation)
         content_layout.addWidget(chat_wrapper, 1)
 
-        # Status bar
+        # Status text
         self.status_label = QLabel("Ready  ·  Type a message to get started")
         self.status_label.setObjectName("statusLabel")
-        self.status_label.setContentsMargins(24, 4, 24, 4)
+        self.status_label.setContentsMargins(20, 2, 20, 2)
         content_layout.addWidget(self.status_label)
 
-        # Composer
+        # Composer Capsule Frame
         composer_outer = QWidget()
         composer_outer.setObjectName("composerOuter")
         col = QHBoxLayout(composer_outer)
-        col.setContentsMargins(20, 10, 20, 16)
+        col.setContentsMargins(18, 6, 18, 14)
 
         composer_frame = QFrame()
         composer_frame.setObjectName("composerFrame")
-        shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(20)
-        shadow.setOffset(0, -3)
-        shadow.setColor(QColor(0, 0, 0, 15))
-        composer_frame.setGraphicsEffect(shadow)
+        composer_frame.setFixedHeight(46)
 
-        cmp = QHBoxLayout(composer_frame)
-        cmp.setContentsMargins(14, 8, 8, 8)
-        cmp.setSpacing(8)
+        cmp_lay = QHBoxLayout(composer_frame)
+        cmp_lay.setContentsMargins(12, 4, 6, 4)
+        cmp_lay.setSpacing(8)
 
         self.input = QLineEdit()
         self.input.setObjectName("messageInput")
         self.input.setPlaceholderText("Message Astra…")
         self.input.setClearButtonEnabled(True)
         self.input.returnPressed.connect(self._submit_from_input)
-        cmp.addWidget(self.input, 1)
+        cmp_lay.addWidget(self.input, 1)
 
         self.microphone_button = QPushButton("Voice")
         self.microphone_button.setObjectName("iconButton")
-        self.microphone_button.setFixedSize(56, 38)
+        self.microphone_button.setFixedSize(52, 32)
         if _VOICE_AVAILABLE:
             self.microphone_button.setToolTip("Click to speak (voice input)")
             self.microphone_button.clicked.connect(self._start_voice_input)
@@ -1046,13 +1131,13 @@ class MainWindow(QMainWindow):
             )
             self.microphone_button.setEnabled(False)
             self.microphone_button.clicked.connect(self.microphone_requested)
-        cmp.addWidget(self.microphone_button)
+        cmp_lay.addWidget(self.microphone_button)
 
         self.send_button = QPushButton("Send")
         self.send_button.setObjectName("sendButton")
-        self.send_button.setFixedHeight(38)
+        self.send_button.setFixedSize(54, 32)
         self.send_button.clicked.connect(self._submit_from_input)
-        cmp.addWidget(self.send_button)
+        cmp_lay.addWidget(self.send_button)
 
         col.addWidget(composer_frame)
         content_layout.addWidget(composer_outer)
@@ -1065,365 +1150,711 @@ class MainWindow(QMainWindow):
         if self._settings_load_error:
             self.status_label.setText("Settings could not be loaded; defaults are in use")
 
-    # ── Stylesheet ────────────────────────────────────────────────────────────
+    # ── Styling: Apple Light & Dark Themes ────────────────────────────────────
 
     def _apply_style(self) -> None:
-        self.setStyleSheet(
-            """
-            /* ── Base ─────────────────────────────────────────── */
-            QWidget {
-                font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Arial, sans-serif;
-                font-size: 13px;
-            }
-            QWidget#centralWidget {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f1f5f9, stop:0.4 #e8eef6, stop:1 #e2e8f0);
-            }
+        """Apply Apple-inspired Light theme (macOS silver & crisp neutrals)."""
+        chevron_path = (_ASSETS_DIR / "chevron_down.svg").as_posix()
+        search_path = (_ASSETS_DIR / "search.svg").as_posix()
 
-            /* ── Sidebar - Frosted Glass ─────────────────────── */
-            QWidget#sidebar {
-                background: rgba(248, 250, 253, 0.78);
-                border-right: 1px solid rgba(226, 232, 240, 0.75);
-            }
-            QLabel#sidebarBrand {
-                color: #0f172a;
-                font-size: 17px;
-                font-weight: 700;
-                letter-spacing: -0.3px;
-            }
-            QLabel#sidebarSection {
-                color: #64748b;
-                font-size: 11px;
-                font-weight: 700;
-                letter-spacing: 1.2px;
-                padding: 6px 6px 2px 6px;
+        self.setStyleSheet(
+            f"""
+            /* ── Base ─────────────────────────────────────────── */
+            QWidget {{
+                font-family: -apple-system, 'SF Pro Text', 'Segoe UI', Arial, sans-serif;
+                font-size: 13px;
+                color: #1d1d1f;
+            }}
+            QWidget#centralWidget {{
+                background: #f2f2f6;
+            }}
+
+            /* ── Sidebar ──────────────────────────────────────── */
+            QWidget#sidebar {{
+                background: #ececf0;
+                border-right: 1px solid #e1e1e6;
+            }}
+            QLabel#sidebarBrand {{
+                color: #1d1d1f;
+                font-size: 14.5px;
+                font-weight: 600;
+                letter-spacing: -0.2px;
+            }}
+            QLabel#sidebarSection {{
+                color: #86868b;
+                font-size: 10px;
+                font-weight: 600;
+                letter-spacing: 0.8px;
+                padding: 4px 6px 2px 6px;
                 text-transform: uppercase;
-            }
-            QListWidget#chatHistory {
+            }}
+            QListWidget#chatHistory {{
                 background: transparent;
                 border: none;
                 outline: none;
-                color: #334155;
+                color: #48484a;
                 font-size: 12px;
-            }
-            QListWidget#chatHistory::item {
-                padding: 7px 10px;
-                border-radius: 8px;
-                margin: 2px 0;
-            }
-            QListWidget#chatHistory::item:hover {
-                background: rgba(226, 232, 240, 0.6);
-                color: #0f172a;
-            }
-            QListWidget#chatHistory::item:selected {
-                background: rgba(219, 234, 254, 0.85);
-                color: #1d4ed8;
+            }}
+            QListWidget#chatHistory::item {{
+                padding: 6px 9px;
+                border-radius: 6px;
+                margin: 1px 0;
+            }}
+            QListWidget#chatHistory::item:hover {{
+                background: rgba(0, 0, 0, 0.04);
+                color: #1d1d1f;
+            }}
+            QListWidget#chatHistory::item:selected {{
+                background: rgba(0, 113, 227, 0.12);
+                color: #0071e3;
                 font-weight: 600;
-            }
-            QLineEdit#chatSearch {
-                background: rgba(255, 255, 255, 0.8);
-                border: 1px solid rgba(203, 213, 225, 0.7);
-                border-radius: 8px;
-                padding: 6px 10px;
-                color: #0f172a;
-                font-size: 12px;
-            }
-            QLineEdit#chatSearch:focus {
-                border-color: #3b82f6;
+            }}
+            QLineEdit#chatSearch {{
                 background: #ffffff;
-            }
-            QLabel#accountLabel {
-                color: #475569;
-                font-size: 11px;
-                font-weight: 600;
-                padding: 10px 6px;
-                border-top: 1px solid rgba(226, 232, 240, 0.6);
-            }
-            QPushButton#sidebarButton {
+                border: 1px solid #d2d2d7;
+                border-radius: 6px;
+                padding: 3px 8px;
+                color: #1d1d1f;
+                font-size: 11.5px;
+            }}
+            QLineEdit#chatSearch:focus {{
+                border: 1.5px solid #0071e3;
+            }}
+            QFrame#sidebarSep {{
+                background: #e1e1e6;
+                border: none;
+            }}
+            QLabel#accountLabel {{
+                color: #86868b;
+                font-size: 10.5px;
+                padding: 6px 4px 2px 4px;
+            }}
+            QPushButton#sidebarButton {{
                 background: transparent;
                 border: none;
-                color: #334155;
+                color: #48484a;
                 text-align: left;
-                padding: 8px 10px;
+                padding: 6px 8px;
                 font-size: 12px;
                 font-weight: 500;
-                border-radius: 8px;
-            }
-            QPushButton#sidebarButton:hover {
-                background: rgba(226, 232, 240, 0.6);
-                color: #0f172a;
-            }
-            QPushButton#sidebarIcon {
+                border-radius: 6px;
+            }}
+            QPushButton#sidebarButton:hover {{
+                background: rgba(0, 0, 0, 0.04);
+                color: #1d1d1f;
+            }}
+            QPushButton#sidebarIcon {{
                 background: transparent;
                 border: none;
-                color: #64748b;
-                font-size: 12px;
-                font-weight: 700;
-                border-radius: 6px;
-            }
-            QPushButton#sidebarIcon:hover {
-                background: rgba(226, 232, 240, 0.6);
-                color: #0f172a;
-            }
-            QPushButton#newChatButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #3b82f6, stop:1 #2563eb);
+                color: #6e6e73;
+                font-size: 13px;
+                border-radius: 5px;
+            }}
+            QPushButton#sidebarIcon:hover {{
+                background: rgba(0, 0, 0, 0.06);
+                color: #1d1d1f;
+            }}
+            QPushButton#newChatButton {{
+                background: #0071e3;
                 border: none;
-                border-radius: 9px;
+                border-radius: 7px;
                 color: #ffffff;
                 text-align: left;
-                padding: 9px 12px;
+                padding: 0 12px;
                 font-size: 12px;
                 font-weight: 600;
-            }
-            QPushButton#newChatButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2563eb, stop:1 #1d4ed8);
-            }
+            }}
+            QPushButton#newChatButton:hover {{
+                background: #0077ed;
+            }}
+            QPushButton#newChatButton:pressed {{
+                background: #005bb5;
+            }}
 
-            /* ── Content Panel - Elevated Glass Card ──────────── */
-            QWidget#contentPanel {
-                background: rgba(255, 255, 255, 0.85);
-                border: 1px solid rgba(255, 255, 255, 0.95);
-                border-radius: 16px;
-                margin: 8px 10px 8px 0;
-            }
+            /* ── Content Panel (Elevated Card) ────────────────── */
+            QWidget#contentPanel {{
+                background: #ffffff;
+                border-left: 1px solid #e1e1e6;
+            }}
 
-            /* ── Header ───────────────────────────────────────── */
-            QWidget#headerBar {
-                background: rgba(255, 255, 255, 0.6);
-                border-bottom: 1px solid rgba(226, 232, 240, 0.6);
-                border-top-left-radius: 16px;
-                border-top-right-radius: 16px;
-            }
-            QFrame#headerSep {
-                background: transparent;
+            /* ── Header Bar ───────────────────────────────────── */
+            QWidget#headerBar {{
+                background: #ffffff;
+            }}
+            QFrame#headerSep {{
+                background: #e5e5ea;
                 border: none;
-            }
-            QLabel#headerChatTitle {
-                color: #0f172a;
-                font-size: 14px;
+            }}
+            QLabel#headerChatTitle {{
+                color: #1d1d1f;
+                font-size: 13.5px;
                 font-weight: 600;
-            }
+                letter-spacing: -0.1px;
+            }}
 
-            /* ── Status Pills ─────────────────────────────────── */
-            QLabel#pillReady {
-                background: rgba(220, 252, 231, 0.8);
-                color: #15803d;
-                border: 1px solid rgba(187, 247, 208, 0.8);
-                border-radius: 14px;
-                padding: 0;
+            /* ── Status Indicator Pills ───────────────────────── */
+            QLabel#pillReady {{
+                background: rgba(52, 199, 89, 0.12);
+                color: #248a3d;
+                border: 1px solid rgba(52, 199, 89, 0.3);
+                border-radius: 12px;
+                padding: 2px 10px;
                 font-size: 11px;
                 font-weight: 600;
-            }
-            QLabel#pillThinking {
-                background: rgba(254, 243, 199, 0.85);
-                color: #b45309;
-                border: 1px solid rgba(253, 230, 138, 0.8);
-                border-radius: 14px;
-                padding: 0;
+            }}
+            QLabel#pillThinking {{
+                background: rgba(255, 149, 0, 0.12);
+                color: #c97500;
+                border: 1px solid rgba(255, 149, 0, 0.3);
+                border-radius: 12px;
+                padding: 2px 10px;
                 font-size: 11px;
                 font-weight: 600;
-            }
-            QLabel#pillListening {
-                background: rgba(219, 234, 254, 0.85);
-                color: #1d4ed8;
-                border: 1px solid rgba(191, 219, 254, 0.8);
-                border-radius: 14px;
-                padding: 0;
+            }}
+            QLabel#pillListening {{
+                background: rgba(0, 113, 227, 0.12);
+                color: #0071e3;
+                border: 1px solid rgba(0, 113, 227, 0.3);
+                border-radius: 12px;
+                padding: 2px 10px;
                 font-size: 11px;
                 font-weight: 600;
-            }
+            }}
 
             /* ── Welcome Panel ────────────────────────────────── */
-            QWidget#chatWrapper { background: transparent; }
-            QWidget#welcomePanel { background: transparent; }
-            QLabel#welcomeTitle {
-                color: #0f172a;
-                font-size: 34px;
+            QWidget#chatWrapper {{ background: transparent; }}
+            QWidget#welcomePanel {{ background: transparent; }}
+            QLabel#welcomeTitle {{
+                color: #1d1d1f;
+                font-size: 22px;
                 font-weight: 600;
-                letter-spacing: -0.5px;
-            }
-            QLabel#welcomeSubtitle {
-                color: #94a3b8;
-                font-size: 28px;
-                font-weight: 300;
-            }
-            QLabel#chipsLabel {
-                color: #64748b;
-                font-size: 11px;
-                font-weight: 600;
-                letter-spacing: 0.8px;
-                text-transform: uppercase;
-            }
-            QPushButton#suggestionButton {
-                background: rgba(255, 255, 255, 0.75);
-                border: 1px solid rgba(203, 213, 225, 0.7);
-                border-radius: 20px;
-                color: #334155;
-                padding: 8px 16px;
-                font-size: 12px;
+                letter-spacing: -0.3px;
+            }}
+            QLabel#welcomeSubtitle {{
+                color: #86868b;
+                font-size: 14px;
+                font-weight: 400;
+            }}
+            QPushButton#suggestionButton {{
+                background: #ffffff;
+                border: 1px solid #d2d2d7;
+                border-radius: 14px;
+                color: #1d1d1f;
+                padding: 6px 14px;
+                font-size: 11.5px;
                 font-weight: 500;
-                text-align: center;
-            }
-            QPushButton#suggestionButton:hover {
-                background: rgba(239, 246, 255, 0.95);
-                border-color: #3b82f6;
-                color: #1d4ed8;
-            }
+            }}
+            QPushButton#suggestionButton:hover {{
+                background: #f5f5f7;
+                border-color: #0071e3;
+                color: #0071e3;
+            }}
 
             /* ── Conversation List ────────────────────────────── */
-            QListWidget#conversationList {
+            QListWidget#conversationList {{
                 background: transparent;
                 border: none;
-                padding: 14px 18px;
-            }
-            QListWidget#conversationList::item {
+                padding: 10px 16px;
+            }}
+            QListWidget#conversationList::item {{
                 background: transparent;
                 border: none;
                 padding: 0;
-            }
-            QScrollBar:vertical {
+            }}
+            QScrollBar:vertical {{
                 background: transparent;
                 width: 6px;
                 border-radius: 3px;
                 margin: 4px 2px;
-            }
-            QScrollBar::handle:vertical {
-                background: rgba(148, 163, 184, 0.4);
+            }}
+            QScrollBar::handle:vertical {{
+                background: rgba(0, 0, 0, 0.15);
                 border-radius: 3px;
-                min-height: 28px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background: rgba(100, 116, 139, 0.6);
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                min-height: 24px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: rgba(0, 0, 0, 0.28);
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
                 height: 0;
-            }
+            }}
 
-            /* ── Message Bubbles ──────────────────────────────── */
-            QFrame#astraBubble {
-                background: rgba(248, 250, 252, 0.9);
-                border: 1px solid rgba(226, 232, 240, 0.85);
-                border-radius: 16px;
+            /* ── Message Cards ────────────────────────────────── */
+            QFrame#astraBubble {{
+                background: #ffffff;
+                border: 1px solid #e5e5ea;
+                border-radius: 14px;
                 border-top-left-radius: 4px;
-            }
-            QFrame#userBubble {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1e293b, stop:1 #0f172a);
-                border: 1px solid rgba(255, 255, 255, 0.12);
+            }}
+            QFrame#userBubble {{
+                background: #0071e3;
+                border: none;
                 border-radius: 16px;
                 border-top-right-radius: 4px;
-            }
-            QFrame#errorBubble {
-                background: rgba(254, 242, 242, 0.9);
-                border: 1px solid rgba(254, 202, 202, 0.85);
-                border-radius: 16px;
-            }
-            QLabel#bubbleSender {
-                color: #64748b;
+            }}
+            QFrame#errorBubble {{
+                background: #fff5f5;
+                border: 1px solid #ffd1d1;
+                border-radius: 14px;
+                border-top-left-radius: 4px;
+            }}
+            QLabel#bubbleSender {{
+                color: #86868b;
                 font-size: 10px;
-                font-weight: 700;
-                letter-spacing: 0.8px;
-            }
-            QLabel#bubbleTimestamp {
-                color: #94a3b8;
+                font-weight: 600;
+                letter-spacing: 0.5px;
+                text-transform: uppercase;
+            }}
+            QLabel#bubbleTimestamp {{
+                color: #aeaeb2;
                 font-size: 10px;
-            }
-            QLabel#bubbleText {
-                color: #0f172a;
-                font-size: 13px;
+            }}
+            QLabel#bubbleText {{
+                color: #1d1d1f;
+                font-size: 13.5px;
+                line-height: 1.6;
+            }}
+            QLabel#bubbleTextUser {{
+                color: #ffffff;
+                font-size: 13.5px;
                 line-height: 1.55;
-            }
-            QLabel#bubbleTextUser {
-                color: #f8fafc;
-                font-size: 13px;
+            }}
+            QLabel#bubbleTextError {{
+                color: #d70015;
+                font-size: 13.5px;
                 line-height: 1.55;
-            }
+            }}
 
             /* ── Status Bar ───────────────────────────────────── */
-            QLabel#statusLabel {
-                color: #64748b;
+            QLabel#statusLabel {{
+                color: #86868b;
                 font-size: 11px;
                 background: transparent;
-                padding: 4px 24px;
-            }
+            }}
 
-            /* ── Composer ─────────────────────────────────────── */
-            QWidget#composerOuter { background: transparent; }
-            QFrame#composerFrame {
-                background: rgba(255, 255, 255, 0.92);
-                border: 1.5px solid rgba(203, 213, 225, 0.7);
-                border-radius: 16px;
-            }
-            QFrame#composerFrame:focus-within {
-                border: 1.5px solid #3b82f6;
+            /* ── Composer Capsule ─────────────────────────────── */
+            QWidget#composerOuter {{ background: transparent; }}
+            QFrame#composerFrame {{
                 background: #ffffff;
-            }
-            QLineEdit#messageInput {
+                border: 1px solid #d2d2d7;
+                border-radius: 23px;
+            }}
+            QFrame#composerFrame:focus-within {{
+                border: 1.5px solid #0071e3;
+            }}
+            QLineEdit#messageInput {{
                 background: transparent;
                 border: none;
-                padding: 8px 10px;
-                color: #0f172a;
-                font-size: 13px;
-            }
+                padding: 4px 8px;
+                color: #1d1d1f;
+                font-size: 13.5px;
+            }}
 
-            /* ── Buttons ──────────────────────────────────────── */
-            QPushButton#sendButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #3b82f6, stop:1 #2563eb);
+            /* ── Controls ─────────────────────────────────────── */
+            QPushButton#sendButton {{
+                background: #0071e3;
                 color: #ffffff;
                 border: none;
-                padding: 0 18px;
-                min-height: 36px;
-                min-width: 72px;
-                border-radius: 8px;
+                border-radius: 16px;
                 font-weight: 600;
                 font-size: 12px;
-            }
-            QPushButton#sendButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2563eb, stop:1 #1d4ed8);
-            }
-            QPushButton#sendButton:disabled {
-                background: #cbd5e1;
-                color: #64748b;
-            }
-            QPushButton#iconButton {
-                background: rgba(241, 245, 249, 0.8);
-                border: 1px solid rgba(203, 213, 225, 0.8);
-                color: #334155;
-                font-size: 12px;
-                font-weight: 600;
-                border-radius: 8px;
-                padding: 0 12px;
-            }
-            QPushButton#iconButton:hover {
-                background: rgba(239, 246, 255, 0.95);
-                border-color: #3b82f6;
-                color: #1d4ed8;
-            }
-            QPushButton#iconButtonActive {
-                background: #fee2e2;
-                border: 1.5px solid #ef4444;
-                color: #ef4444;
-                font-size: 12px;
-                font-weight: 600;
-                border-radius: 8px;
-                padding: 0 12px;
-            }
-            QPushButton#ghostButton {
-                background: transparent;
-                border: 1px solid rgba(203, 213, 225, 0.7);
-                border-radius: 8px;
-                color: #334155;
-                font-size: 12px;
+            }}
+            QPushButton#sendButton:hover {{
+                background: #0077ed;
+            }}
+            QPushButton#sendButton:disabled {{
+                background: #e5e5ea;
+                color: #a1a1a6;
+            }}
+            QPushButton#iconButton {{
+                background: #f2f2f6;
+                border: 1px solid #e1e1e6;
+                color: #48484a;
+                font-size: 11.5px;
                 font-weight: 500;
-                padding: 6px 12px;
-            }
-            QPushButton#ghostButton:hover {
-                background: rgba(241, 245, 249, 0.8);
-                color: #0f172a;
-            }
-            QPushButton:disabled { opacity: 0.45; }
+                border-radius: 16px;
+            }}
+            QPushButton#iconButton:hover {{
+                background: #e5e5ea;
+                color: #1d1d1f;
+            }}
+            QPushButton#iconButtonActive {{
+                background: #ff3b30;
+                border: none;
+                color: #ffffff;
+                font-size: 11.5px;
+                font-weight: 600;
+                border-radius: 16px;
+            }}
+            QPushButton#ghostButton {{
+                background: transparent;
+                border: 1px solid #d2d2d7;
+                border-radius: 6px;
+                color: #48484a;
+                font-size: 11.5px;
+                font-weight: 500;
+                padding: 0 10px;
+            }}
+            QPushButton#ghostButton:hover {{
+                background: #f2f2f6;
+                color: #1d1d1f;
+            }}
+            QPushButton:disabled {{ opacity: 0.4; }}
             """
         )
 
-    # ── Session management ────────────────────────────────────────────────────
+    def _apply_dark_style(self) -> None:
+        """Apply Apple-inspired Dark theme (macOS layered slate and charcoal)."""
+        chevron_path = (_ASSETS_DIR / "chevron_down_dark.svg").as_posix()
+        search_path = (_ASSETS_DIR / "search.svg").as_posix()
+
+        self.setStyleSheet(
+            f"""
+            /* ── Base ─────────────────────────────────────────── */
+            QWidget {{
+                font-family: -apple-system, 'SF Pro Text', 'Segoe UI', Arial, sans-serif;
+                font-size: 13px;
+                color: #f5f5f7;
+            }}
+            QWidget#centralWidget {{
+                background: #161618;
+            }}
+
+            /* ── Sidebar ──────────────────────────────────────── */
+            QWidget#sidebar {{
+                background: #1c1c1e;
+                border-right: 1px solid #2c2c30;
+            }}
+            QLabel#sidebarBrand {{
+                color: #f5f5f7;
+                font-size: 14.5px;
+                font-weight: 600;
+                letter-spacing: -0.2px;
+            }}
+            QLabel#sidebarSection {{
+                color: #86868b;
+                font-size: 10px;
+                font-weight: 600;
+                letter-spacing: 0.8px;
+                padding: 4px 6px 2px 6px;
+                text-transform: uppercase;
+            }}
+            QListWidget#chatHistory {{
+                background: transparent;
+                border: none;
+                outline: none;
+                color: #a1a1a6;
+                font-size: 12px;
+            }}
+            QListWidget#chatHistory::item {{
+                padding: 6px 9px;
+                border-radius: 6px;
+                margin: 1px 0;
+            }}
+            QListWidget#chatHistory::item:hover {{
+                background: rgba(255, 255, 255, 0.06);
+                color: #f5f5f7;
+            }}
+            QListWidget#chatHistory::item:selected {{
+                background: rgba(10, 132, 255, 0.2);
+                color: #64d2ff;
+                font-weight: 600;
+            }}
+            QLineEdit#chatSearch {{
+                background: #242428;
+                border: 1px solid #38383c;
+                border-radius: 6px;
+                padding: 3px 8px;
+                color: #f5f5f7;
+                font-size: 11.5px;
+            }}
+            QLineEdit#chatSearch:focus {{
+                border: 1.5px solid #0a84ff;
+            }}
+            QFrame#sidebarSep {{
+                background: #2c2c30;
+                border: none;
+            }}
+            QLabel#accountLabel {{
+                color: #6e6e73;
+                font-size: 10.5px;
+                padding: 6px 4px 2px 4px;
+            }}
+            QPushButton#sidebarButton {{
+                background: transparent;
+                border: none;
+                color: #a1a1a6;
+                text-align: left;
+                padding: 6px 8px;
+                font-size: 12px;
+                font-weight: 500;
+                border-radius: 6px;
+            }}
+            QPushButton#sidebarButton:hover {{
+                background: rgba(255, 255, 255, 0.06);
+                color: #f5f5f7;
+            }}
+            QPushButton#sidebarIcon {{
+                background: transparent;
+                border: none;
+                color: #86868b;
+                font-size: 13px;
+                border-radius: 5px;
+            }}
+            QPushButton#sidebarIcon:hover {{
+                background: rgba(255, 255, 255, 0.08);
+                color: #f5f5f7;
+            }}
+            QPushButton#newChatButton {{
+                background: #0a84ff;
+                border: none;
+                border-radius: 7px;
+                color: #ffffff;
+                text-align: left;
+                padding: 0 12px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QPushButton#newChatButton:hover {{
+                background: #2997ff;
+            }}
+            QPushButton#newChatButton:pressed {{
+                background: #0066cc;
+            }}
+
+            /* ── Content Panel (Elevated Card) ────────────────── */
+            QWidget#contentPanel {{
+                background: #202024;
+                border-left: 1px solid #2c2c30;
+            }}
+
+            /* ── Header Bar ───────────────────────────────────── */
+            QWidget#headerBar {{
+                background: #202024;
+            }}
+            QFrame#headerSep {{
+                background: #2c2c30;
+                border: none;
+            }}
+            QLabel#headerChatTitle {{
+                color: #f5f5f7;
+                font-size: 13.5px;
+                font-weight: 600;
+                letter-spacing: -0.1px;
+            }}
+
+            /* ── Status Indicator Pills ───────────────────────── */
+            QLabel#pillReady {{
+                background: rgba(52, 199, 89, 0.18);
+                color: #30d158;
+                border: 1px solid rgba(52, 199, 89, 0.35);
+                border-radius: 12px;
+                padding: 2px 10px;
+                font-size: 11px;
+                font-weight: 600;
+            }}
+            QLabel#pillThinking {{
+                background: rgba(255, 159, 10, 0.18);
+                color: #ff9f0a;
+                border: 1px solid rgba(255, 159, 10, 0.35);
+                border-radius: 12px;
+                padding: 2px 10px;
+                font-size: 11px;
+                font-weight: 600;
+            }}
+            QLabel#pillListening {{
+                background: rgba(10, 132, 255, 0.18);
+                color: #64d2ff;
+                border: 1px solid rgba(10, 132, 255, 0.35);
+                border-radius: 12px;
+                padding: 2px 10px;
+                font-size: 11px;
+                font-weight: 600;
+            }}
+
+            /* ── Welcome Panel ────────────────────────────────── */
+            QWidget#chatWrapper {{ background: transparent; }}
+            QWidget#welcomePanel {{ background: transparent; }}
+            QLabel#welcomeTitle {{
+                color: #f5f5f7;
+                font-size: 22px;
+                font-weight: 600;
+                letter-spacing: -0.3px;
+            }}
+            QLabel#welcomeSubtitle {{
+                color: #86868b;
+                font-size: 14px;
+                font-weight: 400;
+            }}
+            QPushButton#suggestionButton {{
+                background: #28282c;
+                border: 1px solid #38383c;
+                border-radius: 14px;
+                color: #f5f5f7;
+                padding: 6px 14px;
+                font-size: 11.5px;
+                font-weight: 500;
+            }}
+            QPushButton#suggestionButton:hover {{
+                background: #323236;
+                border-color: #0a84ff;
+                color: #64d2ff;
+            }}
+
+            /* ── Conversation List ────────────────────────────── */
+            QListWidget#conversationList {{
+                background: transparent;
+                border: none;
+                padding: 10px 16px;
+            }}
+            QListWidget#conversationList::item {{
+                background: transparent;
+                border: none;
+                padding: 0;
+            }}
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 6px;
+                border-radius: 3px;
+                margin: 4px 2px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: rgba(255, 255, 255, 0.15);
+                border-radius: 3px;
+                min-height: 24px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: rgba(255, 255, 255, 0.3);
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0;
+            }}
+
+            /* ── Message Cards ────────────────────────────────── */
+            QFrame#astraBubble {{
+                background: #26262a;
+                border: 1px solid #38383c;
+                border-radius: 14px;
+                border-top-left-radius: 4px;
+            }}
+            QFrame#userBubble {{
+                background: #0a84ff;
+                border: none;
+                border-radius: 16px;
+                border-top-right-radius: 4px;
+            }}
+            QFrame#errorBubble {{
+                background: #2c1517;
+                border: 1px solid #5c2427;
+                border-radius: 14px;
+                border-top-left-radius: 4px;
+            }}
+            QLabel#bubbleSender {{
+                color: #86868b;
+                font-size: 10px;
+                font-weight: 600;
+                letter-spacing: 0.5px;
+                text-transform: uppercase;
+            }}
+            QLabel#bubbleTimestamp {{
+                color: #636366;
+                font-size: 10px;
+            }}
+            QLabel#bubbleText {{
+                color: #f5f5f7;
+                font-size: 13.5px;
+                line-height: 1.6;
+            }}
+            QLabel#bubbleTextUser {{
+                color: #ffffff;
+                font-size: 13.5px;
+                line-height: 1.55;
+            }}
+            QLabel#bubbleTextError {{
+                color: #ff453a;
+                font-size: 13.5px;
+                line-height: 1.55;
+            }}
+
+            /* ── Status Bar ───────────────────────────────────── */
+            QLabel#statusLabel {{
+                color: #86868b;
+                font-size: 11px;
+                background: transparent;
+            }}
+
+            /* ── Composer Capsule ─────────────────────────────── */
+            QWidget#composerOuter {{ background: transparent; }}
+            QFrame#composerFrame {{
+                background: #242428;
+                border: 1px solid #3a3a3c;
+                border-radius: 23px;
+            }}
+            QFrame#composerFrame:focus-within {{
+                border: 1.5px solid #0a84ff;
+            }}
+            QLineEdit#messageInput {{
+                background: transparent;
+                border: none;
+                padding: 4px 8px;
+                color: #f5f5f7;
+                font-size: 13.5px;
+            }}
+
+            /* ── Controls ─────────────────────────────────────── */
+            QPushButton#sendButton {{
+                background: #0a84ff;
+                color: #ffffff;
+                border: none;
+                border-radius: 16px;
+                font-weight: 600;
+                font-size: 12px;
+            }}
+            QPushButton#sendButton:hover {{
+                background: #2997ff;
+            }}
+            QPushButton#sendButton:disabled {{
+                background: #3a3a3c;
+                color: #636366;
+            }}
+            QPushButton#iconButton {{
+                background: #2c2c30;
+                border: 1px solid #3a3a3c;
+                color: #a1a1a6;
+                font-size: 11.5px;
+                font-weight: 500;
+                border-radius: 16px;
+            }}
+            QPushButton#iconButton:hover {{
+                background: #38383c;
+                color: #f5f5f7;
+            }}
+            QPushButton#iconButtonActive {{
+                background: #ff453a;
+                border: none;
+                color: #ffffff;
+                font-size: 11.5px;
+                font-weight: 600;
+                border-radius: 16px;
+            }}
+            QPushButton#ghostButton {{
+                background: transparent;
+                border: 1px solid #3a3a3c;
+                border-radius: 6px;
+                color: #a1a1a6;
+                font-size: 11.5px;
+                font-weight: 500;
+                padding: 0 10px;
+            }}
+            QPushButton#ghostButton:hover {{
+                background: #2c2c30;
+                color: #f5f5f7;
+            }}
+            QPushButton:disabled {{ opacity: 0.4; }}
+            """
+        )
+
+    # ── Session Management ────────────────────────────────────────────────────
 
     def _new_session(self, title: str) -> dict[str, object]:
         session: dict[str, object] = {"title": title, "messages": []}
@@ -1441,7 +1872,6 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem(title)
             item.setData(Qt.ItemDataRole.UserRole, session)
             self.chat_history.addItem(item)
-        # Highlight the active session
         self._sync_history_selection()
 
     def _sync_history_selection(self) -> None:
@@ -1465,7 +1895,7 @@ class MainWindow(QMainWindow):
 
     def _start_new_chat(self) -> None:
         if self._worker is not None:
-            return  # Don't interrupt an ongoing request
+            return
         self._current_session = self._new_session("New conversation")
         self.conversation.clear()
         self.welcome_panel.show()
@@ -1488,12 +1918,39 @@ class MainWindow(QMainWindow):
             self._add_message(str(sender), str(text), record=False)
         self._sync_history_selection()
 
-    # ── Sidebar collapse ──────────────────────────────────────────────────────
+    # ── Sidebar Collapse (Smooth Animation) ───────────────────────────────────
 
     def _toggle_sidebar(self) -> None:
         self._sidebar_collapsed = not self._sidebar_collapsed
-        self.sidebar.setVisible(not self._sidebar_collapsed)
-        self._expand_btn.setVisible(self._sidebar_collapsed)
+        target_w = 0 if self._sidebar_collapsed else 220
+        start_w = self.sidebar.width()
+
+        if _prefers_reduced_motion():
+            self.sidebar.setFixedWidth(target_w)
+            self.sidebar.setVisible(not self._sidebar_collapsed)
+            self._expand_btn.setVisible(self._sidebar_collapsed)
+            return
+
+        if not self._sidebar_collapsed:
+            self.sidebar.setVisible(True)
+            self._expand_btn.setVisible(False)
+
+        anim = QPropertyAnimation(self.sidebar, b"maximumWidth", self)
+        anim.setDuration(180)
+        anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        anim.setStartValue(start_w)
+        anim.setEndValue(target_w)
+
+        def on_finished() -> None:
+            if self._sidebar_collapsed:
+                self.sidebar.setVisible(False)
+                self._expand_btn.setVisible(True)
+            else:
+                self.sidebar.setFixedWidth(220)
+
+        anim.finished.connect(on_finished)
+        anim.start()
+        self._sidebar_anim = anim
 
     # ── Settings ──────────────────────────────────────────────────────────────
 
@@ -1504,335 +1961,25 @@ class MainWindow(QMainWindow):
 
     def _apply_settings(self) -> None:
         """Apply active preferences to the running application."""
-        # Spacing
-        self.conversation.setSpacing(3 if self._settings.compact_messages else 6)
-        # Theme
-        if self._settings.theme == "Dark":
+        self.conversation.setSpacing(2 if self._settings.compact_messages else 5)
+
+        is_dark = (
+            self._settings.theme == "Dark"
+            or (self._settings.theme == "System" and _detect_system_dark_mode())
+        )
+        if is_dark:
             self._apply_dark_style()
         else:
             self._apply_style()
-        # Update TTS synthesizer settings
+
         if self._tts_synthesizer:
             self._tts_synthesizer.voice_name = self._settings.speaker
             self._tts_synthesizer.speed_wpm = self._settings.speech_speed
-        # Update assistant settings if supported
+
         if hasattr(self._assistant, "update_settings"):
             self._assistant.update_settings(self._settings)
 
-    def _apply_dark_style(self) -> None:
-        """Dark theme stylesheet."""
-        self.setStyleSheet(
-            """
-            QWidget {
-                font-family: 'Segoe UI', Arial, sans-serif;
-                font-size: 13px;
-            }
-            QWidget#centralWidget {
-                background: #0f172a;
-            }
-            QWidget#sidebar {
-                background: #1e293b;
-                border-right: 1px solid #334155;
-            }
-            QLabel#sidebarBrand {
-                color: #f8fafc;
-                font-size: 16px;
-                font-weight: 700;
-            }
-            QLabel#sidebarSection {
-                color: #94a3b8;
-                font-size: 10px;
-                font-weight: 700;
-                letter-spacing: 1.5px;
-                padding: 3px 4px 1px 4px;
-            }
-            QListWidget#chatHistory {
-                background: transparent;
-                border: none;
-                outline: none;
-                color: #cbd5e1;
-                font-size: 12px;
-            }
-            QListWidget#chatHistory::item {
-                padding: 6px 8px;
-                border-radius: 7px;
-                margin: 1px 0;
-            }
-            QListWidget#chatHistory::item:hover {
-                background: #334155;
-                color: #f8fafc;
-            }
-            QListWidget#chatHistory::item:selected {
-                background: #2563eb;
-                color: #ffffff;
-            }
-            QLineEdit#chatSearch {
-                background: #0f172a;
-                border: 1.5px solid #334155;
-                border-radius: 7px;
-                padding: 6px 10px;
-                color: #f8fafc;
-                font-size: 12px;
-            }
-            QLineEdit#chatSearch:focus {
-                border-color: #3b82f6;
-            }
-            QLabel#accountLabel {
-                color: #60a5fa;
-                font-size: 11px;
-                font-weight: 600;
-                padding: 10px 4px 2px 4px;
-                border-top: 1px solid #334155;
-            }
-            QPushButton#sidebarButton {
-                background: transparent;
-                border: none;
-                color: #cbd5e1;
-                text-align: left;
-                padding: 8px 6px;
-                font-size: 12px;
-                border-radius: 7px;
-            }
-            QPushButton#sidebarButton:hover {
-                background: #334155;
-                color: #f8fafc;
-            }
-            QPushButton#sidebarIcon {
-                background: transparent;
-                border: none;
-                color: #94a3b8;
-                font-size: 14px;
-                border-radius: 5px;
-            }
-            QPushButton#sidebarIcon:hover {
-                background: #334155;
-                color: #f8fafc;
-            }
-            QPushButton#newChatButton {
-                background: #2563eb;
-                border: none;
-                border-radius: 8px;
-                color: #ffffff;
-                text-align: left;
-                padding: 9px 10px;
-                font-size: 12px;
-                font-weight: 600;
-            }
-            QPushButton#newChatButton:hover {
-                background: #1d4ed8;
-            }
-            QWidget#contentPanel {
-                background: #1e293b;
-                border: 1px solid #334155;
-                border-radius: 14px;
-                margin: 8px 8px 8px 0;
-            }
-            QWidget#headerBar {
-                background: #1e293b;
-                border-top-left-radius: 14px;
-                border-top-right-radius: 14px;
-            }
-            QFrame#headerSep {
-                background: #334155;
-                border: none;
-            }
-            QLabel#headerChatTitle {
-                color: #f8fafc;
-                font-size: 14px;
-                font-weight: 600;
-            }
-            QLabel#pillReady {
-                background: #064e3b;
-                color: #6ee7b7;
-                border: 1px solid #047857;
-                border-radius: 12px;
-                padding: 0;
-                font-size: 11px;
-                font-weight: 600;
-            }
-            QLabel#pillThinking {
-                background: #7c2d12;
-                color: #fdba74;
-                border: 1px solid #9a3412;
-                border-radius: 12px;
-                padding: 0;
-                font-size: 11px;
-                font-weight: 600;
-            }
-            QLabel#pillListening {
-                background: #1e3a8a;
-                color: #93c5fd;
-                border: 1px solid #2563eb;
-                border-radius: 12px;
-                padding: 0;
-                font-size: 11px;
-                font-weight: 600;
-            }
-            QWidget#chatWrapper { background: #1e293b; }
-            QWidget#welcomePanel { background: #1e293b; }
-            QLabel#welcomeTitle {
-                color: #f8fafc;
-                font-size: 36px;
-                font-weight: 400;
-            }
-            QLabel#welcomeSubtitle {
-                color: #64748b;
-                font-size: 36px;
-                font-weight: 400;
-            }
-            QLabel#chipsLabel {
-                color: #94a3b8;
-                font-size: 11px;
-                font-weight: 600;
-                letter-spacing: 0.5px;
-            }
-            QPushButton#suggestionButton {
-                background: #0f172a;
-                border: 1.5px solid #334155;
-                border-radius: 9px;
-                color: #cbd5e1;
-                padding: 8px 12px;
-                font-size: 12px;
-                font-weight: 500;
-                text-align: left;
-            }
-            QPushButton#suggestionButton:hover {
-                background: #1e3a8a;
-                border-color: #3b82f6;
-                color: #ffffff;
-            }
-            QListWidget#conversationList {
-                background: #1e293b;
-                border: none;
-                padding: 14px 16px;
-            }
-            QListWidget#conversationList::item {
-                background: transparent;
-                border: none;
-                color: transparent;
-                padding: 0;
-            }
-            QScrollBar:vertical {
-                background: #0f172a;
-                width: 6px;
-                border-radius: 3px;
-            }
-            QScrollBar::handle:vertical {
-                background: #475569;
-                border-radius: 3px;
-                min-height: 24px;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0;
-            }
-            QFrame#astraBubble {
-                background: #0f172a;
-                border: 1px solid #334155;
-                border-radius: 14px;
-                border-top-left-radius: 4px;
-            }
-            QFrame#userBubble {
-                background: #2563eb;
-                border: 1px solid #1d4ed8;
-                border-radius: 14px;
-                border-top-right-radius: 4px;
-            }
-            QFrame#errorBubble {
-                background: #450a0a;
-                border: 1px solid #7f1d1d;
-                border-radius: 14px;
-            }
-            QLabel#bubbleSender {
-                color: #94a3b8;
-                font-size: 10px;
-                font-weight: 700;
-                letter-spacing: 1px;
-            }
-            QLabel#bubbleTimestamp {
-                color: #64748b;
-                font-size: 10px;
-            }
-            QLabel#bubbleText {
-                color: #f1f5f9;
-                font-size: 13px;
-                line-height: 1.55;
-            }
-            QLabel#bubbleTextUser {
-                color: #ffffff;
-                font-size: 13px;
-                line-height: 1.55;
-            }
-            QLabel#statusLabel {
-                color: #94a3b8;
-                font-size: 11px;
-                background: transparent;
-                padding: 4px 24px;
-            }
-            QWidget#composerOuter { background: #1e293b; }
-            QFrame#composerFrame {
-                background: #0f172a;
-                border: 1px solid #475569;
-                border-radius: 14px;
-            }
-            QFrame#composerFrame:focus-within {
-                border: 2px solid #60a5fa;
-            }
-            QLineEdit#messageInput {
-                background: transparent;
-                border: none;
-                padding: 8px 6px;
-                color: #f8fafc;
-                font-size: 14px;
-            }
-            QPushButton#sendButton {
-                background: #2563eb;
-                color: #ffffff;
-                border: none;
-                padding: 0 20px;
-                min-height: 36px;
-                min-width: 90px;
-            }
-            QPushButton#sendButton:hover { background: #1d4ed8; }
-            QPushButton#sendButton:disabled {
-                background: #475569;
-                color: #94a3b8;
-            }
-            QPushButton#iconButton {
-                background: #0f172a;
-                border: 1px solid #475569;
-                color: #94a3b8;
-                font-size: 16px;
-                border-radius: 10px;
-            }
-            QPushButton#iconButton:hover {
-                background: #1e3a8a;
-                border-color: #60a5fa;
-                color: #60a5fa;
-            }
-            QPushButton#iconButtonActive {
-                background: #7f1d1d;
-                border: 1.5px solid #ef4444;
-                color: #fca5a5;
-                font-size: 16px;
-                border-radius: 10px;
-            }
-            QPushButton#ghostButton {
-                background: transparent;
-                color: #94a3b8;
-                border: 1px solid #334155;
-                padding: 0 14px;
-                min-height: 30px;
-                font-size: 12px;
-            }
-            QPushButton#ghostButton:hover {
-                background: #334155;
-                color: #f8fafc;
-            }
-            QPushButton:disabled { opacity: 0.45; }
-            """
-        )
-
-    # ── Voice input ───────────────────────────────────────────────────────────
+    # ── Voice Input ───────────────────────────────────────────────────────────
 
     def _start_voice_input(self) -> None:
         """Begin a microphone recording session on a background thread."""
@@ -1843,7 +1990,6 @@ class MainWindow(QMainWindow):
                 "Install the required libraries: pip install SpeechRecognition PyAudio",
             )
             return
-        # Prevent overlapping requests
         if self._worker is not None or self._voice_worker is not None:
             return
 
@@ -1870,7 +2016,6 @@ class MainWindow(QMainWindow):
             self.microphone_button.setObjectName("iconButton")
             self.microphone_button.setToolTip("Click to speak (voice input)")
 
-        # Force Qt to re-evaluate objectName-based QSS rules
         for widget in (self.connection_label, self.microphone_button):
             widget.style().unpolish(widget)
             widget.style().polish(widget)
@@ -1890,15 +2035,10 @@ class MainWindow(QMainWindow):
         self._set_listening_state(False)
 
     def _on_voice_text(self, text: str) -> None:
-        """Handle a successfully recognised transcript.
-
-        The text is placed in the input field and submitted automatically so the
-        full flow — voice → AssistantInterface → response — happens seamlessly.
-        """
+        """Handle a successfully recognised transcript."""
         self._set_listening_state(False)
         self.input.setText(text)
         self.input.setFocus()
-        # Submit immediately so the recognised phrase goes to the assistant
         self._submit_from_input()
 
     def _on_voice_error(self, message: str) -> None:
@@ -1934,12 +2074,11 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Ready  ·  Type a message to get started")
             self.connection_label.setText("● Ready")
             self.connection_label.setObjectName("pillReady")
-        # Force Qt to re-evaluate objectName-based QSS rules
+
         self.connection_label.style().unpolish(self.connection_label)
         self.connection_label.style().polish(self.connection_label)
         self.send_button.setEnabled(not thinking)
         self.input.setEnabled(not thinking)
-        # Mic button is only available when voice is installed and nothing is active
         if _VOICE_AVAILABLE:
             self.microphone_button.setEnabled(not thinking)
 
@@ -1965,7 +2104,6 @@ class MainWindow(QMainWindow):
         """Speak response text using TTS outside the UI thread."""
         if not _TTS_AVAILABLE or not self._tts_synthesizer or not text.strip():
             return
-        # Cancel any active TTS speech
         if self._tts_worker is not None:
             self._tts_worker.stop()
             self._tts_worker.wait()
@@ -1987,27 +2125,42 @@ class MainWindow(QMainWindow):
             messages = self._current_session.setdefault("messages", [])
             if isinstance(messages, list):
                 messages.append((sender, text))
-            # Auto-title from first user message
             if sender == "user" and self._current_session.get("title") == "New conversation":
                 new_title = text[:30] + ("…" if len(text) > 30 else "")
                 self._current_session["title"] = new_title
                 self._chat_title_lbl.setText(new_title)
                 self._refresh_chat_history()
 
-        bubble = _MessageBubble(sender, text)
+        is_dark = (
+            self._settings.theme == "Dark"
+            or (self._settings.theme == "System" and _detect_system_dark_mode())
+        )
+        bubble = _MessageBubble(sender, text, is_dark=is_dark)
+
+        # Smooth message appearance animation (160ms OutQuad opacity fade)
+        if not _prefers_reduced_motion():
+            opacity_fx = QGraphicsOpacityEffect(bubble)
+            bubble.setGraphicsEffect(opacity_fx)
+            anim = QPropertyAnimation(opacity_fx, b"opacity", bubble)
+            anim.setDuration(160)
+            anim.setStartValue(0.0)
+            anim.setEndValue(1.0)
+            anim.setEasingCurve(QEasingCurve.Type.OutQuad)
+            anim.start()
+            bubble._fade_anim = anim  # prevent garbage collection
+
         item = QListWidgetItem()
         item.setFlags(Qt.ItemFlag.NoItemFlags)
         self.conversation.addItem(item)
         self.conversation.setItemWidget(item, bubble)
 
-        # Size calculation
         list_w = self.conversation.viewport().width()
         bubble.setFixedWidth(max(list_w - 10, 200))
         bubble.adjustSize()
-        item.setSizeHint(QSize(list_w - 10, bubble.sizeHint().height() + 6))
+        item.setSizeHint(QSize(list_w - 10, bubble.sizeHint().height() + 4))
         self.conversation.scrollToBottom()
 
-    # ── Resize: reflow bubble widths ──────────────────────────────────────────
+    # ── Dynamic Resizing ──────────────────────────────────────────────────────
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
@@ -2018,7 +2171,7 @@ class MainWindow(QMainWindow):
             if widget:
                 widget.setFixedWidth(max(list_w - 10, 200))
                 widget.adjustSize()
-                item.setSizeHint(QSize(list_w - 10, widget.sizeHint().height() + 6))
+                item.setSizeHint(QSize(list_w - 10, widget.sizeHint().height() + 4))
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 

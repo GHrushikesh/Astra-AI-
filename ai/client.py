@@ -24,7 +24,7 @@ class LLMClient:
     """Universal client for communicating with various LLM providers."""
 
     DEFAULT_MODELS: Dict[str, str] = {
-        "Google Gemini": "gemini-1.5-flash",
+        "Google Gemini": "gemini-2.5-flash-lite",
         "OpenAI": "gpt-4o-mini",
         "Groq": "llama-3.3-70b-versatile",
         "Ollama / Local": "llama3.2",
@@ -49,7 +49,9 @@ class LLMClient:
     ) -> None:
         self.provider = provider or "Google Gemini"
         self.api_key = (api_key or "").strip()
-        self.model = (model or "").strip() or self.DEFAULT_MODELS.get(self.provider, "gemini-1.5-flash")
+        self.model = (model or "").strip() or self.DEFAULT_MODELS.get(self.provider, "gemini-2.5-flash-lite")
+        if self.provider == "Google Gemini" and (not self.model or self.model in ("gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-exp", "gemini-2.5-flash")):
+            self.model = "gemini-2.5-flash-lite"
         self.endpoint = (endpoint or "").strip()
         self.timeout = timeout
 
@@ -125,11 +127,6 @@ class LLMClient:
         history: Optional[List[Dict[str, str]]],
         temperature: float,
     ) -> str:
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
-            f"?key={self.api_key}"
-        )
-
         contents: List[Dict[str, Any]] = []
         if history:
             for turn in history:
@@ -153,14 +150,45 @@ class LLMClient:
 
         headers = {"Content-Type": "application/json"}
 
-        try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=self.timeout)
-        except requests.exceptions.Timeout:
-            raise LLMError(f"Request to Google Gemini timed out after {self.timeout}s.")
-        except requests.exceptions.RequestException as exc:
-            raise LLMError(f"Network error connecting to Google Gemini: {exc}")
+        # Determine primary model and fallback candidates
+        primary_model = self.model
+        if primary_model in ("gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-exp", "gemini-2.5-flash", ""):
+            primary_model = "gemini-2.5-flash-lite"
 
-        if resp.status_code != 200:
+        candidate_models = [primary_model]
+        for fallback in ("gemini-2.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.8-flash"):
+            if fallback not in candidate_models:
+                candidate_models.append(fallback)
+
+        last_error_msg = ""
+        for model_name in candidate_models:
+            url = (
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+                f"?key={self.api_key}"
+            )
+
+            try:
+                resp = requests.post(url, json=payload, headers=headers, timeout=self.timeout)
+            except requests.exceptions.Timeout:
+                raise LLMError(f"Request to Google Gemini timed out after {self.timeout}s.")
+            except requests.exceptions.RequestException as exc:
+                raise LLMError(f"Network error connecting to Google Gemini: {exc}")
+
+            if resp.status_code == 200:
+                self.model = model_name  # Pin the working model
+                try:
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if not candidates:
+                        raise LLMError("Google Gemini returned empty candidates list.")
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if not parts:
+                        raise LLMError("Google Gemini response contained no text parts.")
+                    return str(parts[0].get("text", "")).strip()
+                except (KeyError, IndexError, ValueError) as exc:
+                    raise LLMError(f"Failed to parse Google Gemini response: {exc}")
+
+            # Capture error details
             error_msg = f"HTTP {resp.status_code}"
             try:
                 err_json = resp.json()
@@ -168,19 +196,37 @@ class LLMClient:
                     error_msg = err_json["error"]["message"]
             except Exception:
                 error_msg = resp.text[:200]
-            raise LLMError(f"Google Gemini API error ({resp.status_code}): {error_msg}")
+            last_error_msg = error_msg
 
+            if resp.status_code != 404:
+                # 400, 401, 403 are auth or permission errors - do not retry models
+                raise LLMError(f"Google Gemini API error ({resp.status_code}): {error_msg}")
+
+        # Dynamic fallback: query list of models supported by this API key
         try:
-            data = resp.json()
-            candidates = data.get("candidates", [])
-            if not candidates:
-                raise LLMError("Google Gemini returned empty candidates list.")
-            parts = candidates[0].get("content", {}).get("parts", [])
-            if not parts:
-                raise LLMError("Google Gemini response contained no text parts.")
-            return str(parts[0].get("text", "")).strip()
-        except (KeyError, IndexError, ValueError) as exc:
-            raise LLMError(f"Failed to parse Google Gemini response: {exc}")
+            list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}"
+            list_resp = requests.get(list_url, timeout=6)
+            if list_resp.status_code == 200:
+                data = list_resp.json()
+                discovered = [
+                    m["name"].replace("models/", "")
+                    for m in data.get("models", [])
+                    if "generateContent" in m.get("supportedGenerationMethods", [])
+                ]
+                for disc_model in discovered:
+                    if disc_model in candidate_models:
+                        continue
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{disc_model}:generateContent?key={self.api_key}"
+                    resp = requests.post(url, json=payload, headers=headers, timeout=self.timeout)
+                    if resp.status_code == 200:
+                        self.model = disc_model
+                        data = resp.json()
+                        parts = data.get("candidates", [])[0].get("content", {}).get("parts", [])
+                        return str(parts[0].get("text", "")).strip()
+        except Exception:
+            pass
+
+        raise LLMError(f"Google Gemini API error (404): {last_error_msg}")
 
     # ──────────────────────────────────────────────────────────────────────────
     # OpenAI-Compatible Implementation (OpenAI, Groq, Ollama, Custom)
