@@ -20,6 +20,10 @@ class AstraSettings:
     theme: str = "Light"
     start_with_windows: bool = False
     compact_messages: bool = False
+    llm_provider: str = "Google Gemini"
+    llm_api_key: str = ""
+    llm_model: str = "gemini-1.5-flash"
+    llm_endpoint: str = ""
 
 
 class SettingsStore:

@@ -74,6 +74,14 @@ except ImportError:
     def _enumerate_microphones() -> list[str]:  # type: ignore[misc]
         return ["Default microphone"]
 
+# AI Core package
+try:
+    from ai.core import AstraAICore as _AstraAICore
+    _AI_AVAILABLE = True
+except ImportError:
+    _AI_AVAILABLE = False
+    _AstraAICore = None  # type: ignore[assignment,misc]
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Worker thread
@@ -391,6 +399,71 @@ class _SettingsDialog(QDialog):
         sep.setObjectName("settingsSep")
         root.addWidget(sep)
 
+        # AI & LLM Model section
+        root.addWidget(self._section_label("AI & LLM Model"))
+        ai_form = QFormLayout()
+        ai_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        ai_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        ai_form.setHorizontalSpacing(16)
+        ai_form.setVerticalSpacing(10)
+
+        self.llm_provider = QComboBox()
+        self.llm_provider.setObjectName("settingsProviderCombo")
+        providers = ["Google Gemini", "OpenAI", "Groq", "Ollama / Local", "Anthropic", "Custom"]
+        self.llm_provider.addItems(providers)
+        if self._settings.llm_provider in providers:
+            self.llm_provider.setCurrentText(self._settings.llm_provider)
+        else:
+            self.llm_provider.addItem(self._settings.llm_provider)
+            self.llm_provider.setCurrentText(self._settings.llm_provider)
+        self.llm_provider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        self.llm_api_key = QLineEdit()
+        self.llm_api_key.setObjectName("settingsInput")
+        self.llm_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.llm_api_key.setPlaceholderText("Enter API key (leave empty to use env var)...")
+        self.llm_api_key.setText(self._settings.llm_api_key)
+
+        self.llm_model = QLineEdit()
+        self.llm_model.setObjectName("settingsInput")
+        self.llm_model.setPlaceholderText("e.g. gemini-1.5-flash")
+        self.llm_model.setText(self._settings.llm_model)
+
+        self.llm_endpoint = QLineEdit()
+        self.llm_endpoint.setObjectName("settingsInput")
+        self.llm_endpoint.setPlaceholderText("Optional endpoint (e.g. http://localhost:11434/v1)")
+        self.llm_endpoint.setText(self._settings.llm_endpoint)
+
+        def _on_provider_changed(provider: str) -> None:
+            defaults_map = {
+                "Google Gemini": "gemini-1.5-flash",
+                "OpenAI": "gpt-4o-mini",
+                "Groq": "llama-3.3-70b-versatile",
+                "Ollama / Local": "llama3.2",
+                "Anthropic": "claude-3-5-haiku-20241022",
+            }
+            if provider in defaults_map and (not self.llm_model.text() or self.llm_model.text() in defaults_map.values()):
+                self.llm_model.setText(defaults_map[provider])
+            if provider == "Ollama / Local" and not self.llm_endpoint.text():
+                self.llm_endpoint.setText("http://localhost:11434/v1")
+
+        self.llm_provider.currentTextChanged.connect(_on_provider_changed)
+
+        provider_lbl = QLabel("Provider")
+        provider_lbl.setObjectName("settingsRowLabel")
+        key_lbl = QLabel("API Key")
+        key_lbl.setObjectName("settingsRowLabel")
+        model_lbl = QLabel("Model")
+        model_lbl.setObjectName("settingsRowLabel")
+        endpoint_lbl = QLabel("Endpoint")
+        endpoint_lbl.setObjectName("settingsRowLabel")
+
+        ai_form.addRow(provider_lbl, self.llm_provider)
+        ai_form.addRow(key_lbl, self.llm_api_key)
+        ai_form.addRow(model_lbl, self.llm_model)
+        ai_form.addRow(endpoint_lbl, self.llm_endpoint)
+        root.addLayout(ai_form)
+
         # Voice section
         root.addWidget(self._section_label("Voice"))
         voice_form = QFormLayout()
@@ -615,6 +688,19 @@ class _SettingsDialog(QDialog):
                 background-color: #e0eafc;
                 color: #1d4ed8;
             }}
+            QLineEdit#settingsInput {{
+                background: #f8fafc;
+                border: 1.5px solid #cbd5e1;
+                border-radius: 6px;
+                padding: 6px 12px;
+                color: #0f172a;
+                font-size: 13px;
+                min-width: 180px;
+            }}
+            QLineEdit#settingsInput:focus {{
+                border-color: #347be8;
+                background: #ffffff;
+            }}
             QDialogButtonBox#settingsButtons QPushButton {{
                 min-width: 88px;
                 min-height: 34px;
@@ -652,6 +738,10 @@ class _SettingsDialog(QDialog):
             theme=self.theme.currentText(),
             start_with_windows=self.start_with_windows.isChecked(),
             compact_messages=self.compact_mode.isChecked(),
+            llm_provider=self.llm_provider.currentText(),
+            llm_api_key=self.llm_api_key.text().strip(),
+            llm_model=self.llm_model.text().strip(),
+            llm_endpoint=self.llm_endpoint.text().strip(),
         )
         try:
             self._store.save(settings)
@@ -683,7 +773,6 @@ class MainWindow(QMainWindow):
         settings_store: SettingsStore | None = None,
     ) -> None:
         super().__init__(parent)
-        self._assistant = assistant or EchoAssistant()
         self._settings_store = settings_store or SettingsStore()
         self._settings_load_error: str | None = None
         try:
@@ -691,6 +780,12 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             self._settings = AstraSettings()
             self._settings_load_error = str(exc)
+        if assistant is not None:
+            self._assistant = assistant
+        elif _AI_AVAILABLE and _AstraAICore is not None:
+            self._assistant = _AstraAICore(settings_store=self._settings_store)
+        else:
+            self._assistant = EchoAssistant()
         self._worker: Optional[_AssistantWorker] = None
         self._voice_worker: Optional[_VoiceWorker] = None
         self._tts_worker: Optional[_TTSWorker] = None
@@ -1433,6 +1528,9 @@ class MainWindow(QMainWindow):
         if self._tts_synthesizer:
             self._tts_synthesizer.voice_name = self._settings.speaker
             self._tts_synthesizer.speed_wpm = self._settings.speech_speed
+        # Update assistant settings if supported
+        if hasattr(self._assistant, "update_settings"):
+            self._assistant.update_settings(self._settings)
 
     def _apply_dark_style(self) -> None:
         """Dark theme stylesheet."""

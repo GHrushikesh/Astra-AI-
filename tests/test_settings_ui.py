@@ -51,6 +51,24 @@ class TestSettingsDialog(unittest.TestCase):
             )
             dialog.close()
 
+    def test_dialog_saves_llm_preferences(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SettingsStore(Path(directory) / "settings.json")
+            settings = AstraSettings()
+            dialog = _SettingsDialog(settings, store)
+            dialog.llm_provider.setCurrentText("Groq")
+            dialog.llm_api_key.setText("gsk-secret-test-key")
+            dialog.llm_model.setText("llama-3.3-70b-versatile")
+            dialog.llm_endpoint.setText("https://api.groq.com/openai/v1")
+            dialog._save()
+
+            loaded = store.load()
+            self.assertEqual(loaded.llm_provider, "Groq")
+            self.assertEqual(loaded.llm_api_key, "gsk-secret-test-key")
+            self.assertEqual(loaded.llm_model, "llama-3.3-70b-versatile")
+            self.assertEqual(loaded.llm_endpoint, "https://api.groq.com/openai/v1")
+            dialog.close()
+
 
 if __name__ == "__main__":
     unittest.main()
