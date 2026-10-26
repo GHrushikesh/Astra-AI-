@@ -102,7 +102,7 @@ class LLMClient:
         if not self.has_api_key():
             raise LLMError(
                 f"No API key configured for {self.provider}. "
-                "Please add your API key in Astra Settings (⚙)."
+                "Please add your API key in Astra Settings."
             )
 
         provider_lower = self.provider.lower()

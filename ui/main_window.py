@@ -177,6 +177,7 @@ class _TTSWorker(QThread):
 
 def _make_avatar_pixmap(letter: str, bg: str, fg: str, size: int = 32) -> QPixmap:
     """Render a crisp round avatar with a centred letter."""
+    size = max(16, size)
     pix = QPixmap(size, size)
     pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
@@ -185,7 +186,8 @@ def _make_avatar_pixmap(letter: str, bg: str, fg: str, size: int = 32) -> QPixma
     path.addEllipse(0, 0, size, size)
     p.fillPath(path, QColor(bg))
     p.setPen(QColor(fg))
-    p.setFont(QFont("Segoe UI", int(size * 0.38), QFont.Weight.Bold))
+    font_size = max(8, int(size * 0.38))
+    p.setFont(QFont("Segoe UI", font_size, QFont.Weight.Bold))
     p.drawText(QRect(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, letter)
     p.end()
     return pix
@@ -399,70 +401,43 @@ class _SettingsDialog(QDialog):
         sep.setObjectName("settingsSep")
         root.addWidget(sep)
 
-        # AI & LLM Model section
-        root.addWidget(self._section_label("AI & LLM Model"))
+        # Google Gemini AI section
+        root.addWidget(self._section_label("Google Gemini API"))
+        ai_desc = QLabel("Enter your Google Gemini API key to activate AI intelligence and natural language controls.")
+        ai_desc.setWordWrap(True)
+        ai_desc.setStyleSheet("color: #64748b; font-size: 12px; padding: 2px 0 4px 0;")
+        root.addWidget(ai_desc)
+
         ai_form = QFormLayout()
         ai_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         ai_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         ai_form.setHorizontalSpacing(16)
         ai_form.setVerticalSpacing(10)
 
-        self.llm_provider = QComboBox()
-        self.llm_provider.setObjectName("settingsProviderCombo")
-        providers = ["Google Gemini", "OpenAI", "Groq", "Ollama / Local", "Anthropic", "Custom"]
-        self.llm_provider.addItems(providers)
-        if self._settings.llm_provider in providers:
-            self.llm_provider.setCurrentText(self._settings.llm_provider)
-        else:
-            self.llm_provider.addItem(self._settings.llm_provider)
-            self.llm_provider.setCurrentText(self._settings.llm_provider)
-        self.llm_provider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
         self.llm_api_key = QLineEdit()
         self.llm_api_key.setObjectName("settingsInput")
         self.llm_api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.llm_api_key.setPlaceholderText("Enter API key (leave empty to use env var)...")
+        self.llm_api_key.setPlaceholderText("Paste Gemini API key (AIzaSy...)")
         self.llm_api_key.setText(self._settings.llm_api_key)
 
+        key_lbl = QLabel("Gemini API Key")
+        key_lbl.setObjectName("settingsRowLabel")
+        ai_form.addRow(key_lbl, self.llm_api_key)
+        root.addLayout(ai_form)
+
+        # Internal compatibility attributes
+        self.llm_provider = QComboBox()
+        self.llm_provider.addItems(["Google Gemini", "OpenAI", "Groq", "Ollama / Local", "Anthropic", "Custom"])
+        self.llm_provider.setCurrentText(self._settings.llm_provider or "Google Gemini")
+        self.llm_provider.hide()
+
         self.llm_model = QLineEdit()
-        self.llm_model.setObjectName("settingsInput")
-        self.llm_model.setPlaceholderText("e.g. gemini-1.5-flash")
-        self.llm_model.setText(self._settings.llm_model)
+        self.llm_model.setText(self._settings.llm_model or "gemini-1.5-flash")
+        self.llm_model.hide()
 
         self.llm_endpoint = QLineEdit()
-        self.llm_endpoint.setObjectName("settingsInput")
-        self.llm_endpoint.setPlaceholderText("Optional endpoint (e.g. http://localhost:11434/v1)")
-        self.llm_endpoint.setText(self._settings.llm_endpoint)
-
-        def _on_provider_changed(provider: str) -> None:
-            defaults_map = {
-                "Google Gemini": "gemini-1.5-flash",
-                "OpenAI": "gpt-4o-mini",
-                "Groq": "llama-3.3-70b-versatile",
-                "Ollama / Local": "llama3.2",
-                "Anthropic": "claude-3-5-haiku-20241022",
-            }
-            if provider in defaults_map and (not self.llm_model.text() or self.llm_model.text() in defaults_map.values()):
-                self.llm_model.setText(defaults_map[provider])
-            if provider == "Ollama / Local" and not self.llm_endpoint.text():
-                self.llm_endpoint.setText("http://localhost:11434/v1")
-
-        self.llm_provider.currentTextChanged.connect(_on_provider_changed)
-
-        provider_lbl = QLabel("Provider")
-        provider_lbl.setObjectName("settingsRowLabel")
-        key_lbl = QLabel("API Key")
-        key_lbl.setObjectName("settingsRowLabel")
-        model_lbl = QLabel("Model")
-        model_lbl.setObjectName("settingsRowLabel")
-        endpoint_lbl = QLabel("Endpoint")
-        endpoint_lbl.setObjectName("settingsRowLabel")
-
-        ai_form.addRow(provider_lbl, self.llm_provider)
-        ai_form.addRow(key_lbl, self.llm_api_key)
-        ai_form.addRow(model_lbl, self.llm_model)
-        ai_form.addRow(endpoint_lbl, self.llm_endpoint)
-        root.addLayout(ai_form)
+        self.llm_endpoint.setText(self._settings.llm_endpoint or "")
+        self.llm_endpoint.hide()
 
         # Voice section
         root.addWidget(self._section_label("Voice"))
@@ -841,14 +816,14 @@ class MainWindow(QMainWindow):
         sb.addSpacing(20)
 
         # New conversation button
-        new_chat_btn = QPushButton("＋  New conversation")
+        new_chat_btn = QPushButton("+  New Conversation")
         new_chat_btn.setObjectName("newChatButton")
         new_chat_btn.clicked.connect(self._start_new_chat)
         sb.addWidget(new_chat_btn)
         sb.addSpacing(6)
 
         # Search toggle
-        self._search_btn = QPushButton("🔍  Search conversations")
+        self._search_btn = QPushButton("Search Conversations")
         self._search_btn.setObjectName("sidebarButton")
         self._search_btn.clicked.connect(self._toggle_chat_search)
         sb.addWidget(self._search_btn)
@@ -873,23 +848,23 @@ class MainWindow(QMainWindow):
         sb.addWidget(self.chat_history, 1)
 
         # Discover (placeholder)
-        discover_btn = QPushButton("✦  Discover")
+        discover_btn = QPushButton("Discover")
         discover_btn.setObjectName("sidebarButton")
         sb.addWidget(discover_btn)
 
         sb.addStretch()
 
         # Bottom area
-        settings_btn = QPushButton("⚙  Settings")
+        settings_btn = QPushButton("Settings")
         settings_btn.setObjectName("sidebarButton")
         settings_btn.clicked.connect(self._show_settings)
         sb.addWidget(settings_btn)
 
-        help_btn = QPushButton("?  Help center")
+        help_btn = QPushButton("Help Center")
         help_btn.setObjectName("sidebarButton")
         sb.addWidget(help_btn)
 
-        account = QLabel("●  Astra workspace")
+        account = QLabel("Astra Workspace")
         account.setObjectName("accountLabel")
         sb.addWidget(account)
 
@@ -910,7 +885,7 @@ class MainWindow(QMainWindow):
         hl.setContentsMargins(20, 0, 20, 0)
         hl.setSpacing(12)
 
-        self._expand_btn = QPushButton("◫")
+        self._expand_btn = QPushButton(">")
         self._expand_btn.setObjectName("ghostButton")
         self._expand_btn.setFixedSize(30, 30)
         self._expand_btn.setToolTip("Expand sidebar")
@@ -931,16 +906,16 @@ class MainWindow(QMainWindow):
         hl.addLayout(hdr_col)
         hl.addStretch()
 
-        self.connection_label = QLabel("● Ready")
+        self.connection_label = QLabel("Ready")
         self.connection_label.setObjectName("pillReady")
         self.connection_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.connection_label.setFixedSize(78, 30)
+        self.connection_label.setFixedSize(68, 28)
         self.connection_label.setSizePolicy(
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
         )
         hl.addWidget(self.connection_label)
 
-        self.settings_button = QPushButton("⚙  Settings")
+        self.settings_button = QPushButton("Settings")
         self.settings_button.setObjectName("ghostButton")
         self.settings_button.setToolTip("Open Astra settings")
         self.settings_button.clicked.connect(self._show_settings)
@@ -994,10 +969,10 @@ class MainWindow(QMainWindow):
         chips_row = QHBoxLayout()
         chips_row.setSpacing(10)
         suggestions = [
-            ("📋  Generate a plan", "Generate a plan for my week"),
-            ("📝  Summarize text", "Summarize the following text:"),
-            ("💡  Explain a concept", "Explain what machine learning is"),
-            ("🖥️  Open an app", "Open Notepad"),
+            ("Generate Plan", "Generate a plan for my week"),
+            ("Summarize Text", "Summarize the following text:"),
+            ("Explain Concept", "Explain what machine learning is"),
+            ("Open Application", "Open Notepad"),
         ]
         for chip_label, chip_value in suggestions:
             btn = QPushButton(chip_label)
@@ -1059,9 +1034,9 @@ class MainWindow(QMainWindow):
         self.input.returnPressed.connect(self._submit_from_input)
         cmp.addWidget(self.input, 1)
 
-        self.microphone_button = QPushButton("🎤")
+        self.microphone_button = QPushButton("Voice")
         self.microphone_button.setObjectName("iconButton")
-        self.microphone_button.setFixedSize(40, 40)
+        self.microphone_button.setFixedSize(56, 38)
         if _VOICE_AVAILABLE:
             self.microphone_button.setToolTip("Click to speak (voice input)")
             self.microphone_button.clicked.connect(self._start_voice_input)
@@ -1073,9 +1048,9 @@ class MainWindow(QMainWindow):
             self.microphone_button.clicked.connect(self.microphone_requested)
         cmp.addWidget(self.microphone_button)
 
-        self.send_button = QPushButton("Send  ↑")
+        self.send_button = QPushButton("Send")
         self.send_button.setObjectName("sendButton")
-        self.send_button.setFixedHeight(40)
+        self.send_button.setFixedHeight(38)
         self.send_button.clicked.connect(self._submit_from_input)
         cmp.addWidget(self.send_button)
 
@@ -1097,340 +1072,352 @@ class MainWindow(QMainWindow):
             """
             /* ── Base ─────────────────────────────────────────── */
             QWidget {
-                font-family: 'Segoe UI', Arial, sans-serif;
+                font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Arial, sans-serif;
                 font-size: 13px;
             }
             QWidget#centralWidget {
-                background: #eef1f5;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f1f5f9, stop:0.4 #e8eef6, stop:1 #e2e8f0);
             }
 
-            /* ── Sidebar ──────────────────────────────────────── */
+            /* ── Sidebar - Frosted Glass ─────────────────────── */
             QWidget#sidebar {
-                background: #f8f9fb;
-                border-right: 1px solid #e3e7ec;
+                background: rgba(248, 250, 253, 0.78);
+                border-right: 1px solid rgba(226, 232, 240, 0.75);
             }
             QLabel#sidebarBrand {
-                color: #131a2f;
-                font-size: 16px;
+                color: #0f172a;
+                font-size: 17px;
                 font-weight: 700;
+                letter-spacing: -0.3px;
             }
             QLabel#sidebarSection {
-                color: #9ba3b4;
-                font-size: 10px;
+                color: #64748b;
+                font-size: 11px;
                 font-weight: 700;
-                letter-spacing: 1.5px;
-                padding: 3px 4px 1px 4px;
+                letter-spacing: 1.2px;
+                padding: 6px 6px 2px 6px;
+                text-transform: uppercase;
             }
             QListWidget#chatHistory {
                 background: transparent;
                 border: none;
                 outline: none;
-                color: #3b4460;
+                color: #334155;
                 font-size: 12px;
             }
             QListWidget#chatHistory::item {
-                padding: 6px 8px;
-                border-radius: 7px;
-                margin: 1px 0;
+                padding: 7px 10px;
+                border-radius: 8px;
+                margin: 2px 0;
             }
             QListWidget#chatHistory::item:hover {
-                background: #eef2fa;
-                color: #131a2f;
+                background: rgba(226, 232, 240, 0.6);
+                color: #0f172a;
             }
             QListWidget#chatHistory::item:selected {
-                background: #e0eafc;
-                color: #211d3d;
+                background: rgba(219, 234, 254, 0.85);
+                color: #1d4ed8;
+                font-weight: 600;
             }
             QLineEdit#chatSearch {
-                background: #eef0f4;
-                border: 1.5px solid #dfe4eb;
-                border-radius: 7px;
+                background: rgba(255, 255, 255, 0.8);
+                border: 1px solid rgba(203, 213, 225, 0.7);
+                border-radius: 8px;
                 padding: 6px 10px;
-                color: #263149;
+                color: #0f172a;
                 font-size: 12px;
             }
             QLineEdit#chatSearch:focus {
-                border-color: #347be8;
+                border-color: #3b82f6;
                 background: #ffffff;
             }
             QLabel#accountLabel {
-                color: #347be8;
+                color: #475569;
                 font-size: 11px;
                 font-weight: 600;
-                padding: 10px 4px 2px 4px;
-                border-top: 1px solid #edf0f3;
+                padding: 10px 6px;
+                border-top: 1px solid rgba(226, 232, 240, 0.6);
             }
             QPushButton#sidebarButton {
                 background: transparent;
                 border: none;
-                color: #3b4460;
+                color: #334155;
                 text-align: left;
-                padding: 8px 6px;
+                padding: 8px 10px;
                 font-size: 12px;
-                border-radius: 7px;
+                font-weight: 500;
+                border-radius: 8px;
             }
             QPushButton#sidebarButton:hover {
-                background: #eef2fa;
-                color: #131a2f;
+                background: rgba(226, 232, 240, 0.6);
+                color: #0f172a;
             }
             QPushButton#sidebarIcon {
                 background: transparent;
                 border: none;
-                color: #8a91a0;
-                font-size: 14px;
-                border-radius: 5px;
+                color: #64748b;
+                font-size: 12px;
+                font-weight: 700;
+                border-radius: 6px;
             }
             QPushButton#sidebarIcon:hover {
-                background: #eef2fa;
-                color: #3b4460;
+                background: rgba(226, 232, 240, 0.6);
+                color: #0f172a;
             }
             QPushButton#newChatButton {
-                background: #347be8;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #3b82f6, stop:1 #2563eb);
                 border: none;
-                border-radius: 8px;
+                border-radius: 9px;
                 color: #ffffff;
                 text-align: left;
-                padding: 9px 10px;
+                padding: 9px 12px;
                 font-size: 12px;
                 font-weight: 600;
             }
             QPushButton#newChatButton:hover {
-                background: #2563c7;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2563eb, stop:1 #1d4ed8);
             }
 
-            /* ── Content panel ────────────────────────────────── */
+            /* ── Content Panel - Elevated Glass Card ──────────── */
             QWidget#contentPanel {
-                background: #ffffff;
-                border: 1px solid #e3e7ed;
-                border-radius: 14px;
-                margin: 8px 8px 8px 0;
+                background: rgba(255, 255, 255, 0.85);
+                border: 1px solid rgba(255, 255, 255, 0.95);
+                border-radius: 16px;
+                margin: 8px 10px 8px 0;
             }
 
             /* ── Header ───────────────────────────────────────── */
             QWidget#headerBar {
-                background: #ffffff;
-                border-top-left-radius: 14px;
-                border-top-right-radius: 14px;
+                background: rgba(255, 255, 255, 0.6);
+                border-bottom: 1px solid rgba(226, 232, 240, 0.6);
+                border-top-left-radius: 16px;
+                border-top-right-radius: 16px;
             }
             QFrame#headerSep {
-                background: #f0eef7;
+                background: transparent;
                 border: none;
             }
             QLabel#headerChatTitle {
-                color: #131a2f;
+                color: #0f172a;
                 font-size: 14px;
                 font-weight: 600;
             }
 
-            /* ── Status pills ─────────────────────────────────── */
+            /* ── Status Pills ─────────────────────────────────── */
             QLabel#pillReady {
-                background: #e9fbf2;
-                color: #16834f;
-                border: 1px solid #c8f0d9;
-                border-radius: 12px;
+                background: rgba(220, 252, 231, 0.8);
+                color: #15803d;
+                border: 1px solid rgba(187, 247, 208, 0.8);
+                border-radius: 14px;
                 padding: 0;
                 font-size: 11px;
                 font-weight: 600;
             }
             QLabel#pillThinking {
-                background: #fff7ed;
-                color: #c2410c;
-                border: 1px solid #fed7aa;
-                border-radius: 12px;
+                background: rgba(254, 243, 199, 0.85);
+                color: #b45309;
+                border: 1px solid rgba(253, 230, 138, 0.8);
+                border-radius: 14px;
                 padding: 0;
                 font-size: 11px;
                 font-weight: 600;
             }
             QLabel#pillListening {
-                background: #eff6ff;
+                background: rgba(219, 234, 254, 0.85);
                 color: #1d4ed8;
-                border: 1px solid #bfdbfe;
-                border-radius: 12px;
+                border: 1px solid rgba(191, 219, 254, 0.8);
+                border-radius: 14px;
                 padding: 0;
                 font-size: 11px;
                 font-weight: 600;
             }
 
-            /* ── Welcome panel ────────────────────────────────── */
-            QWidget#chatWrapper { background: #ffffff; }
-            QWidget#welcomePanel { background: #ffffff; }
+            /* ── Welcome Panel ────────────────────────────────── */
+            QWidget#chatWrapper { background: transparent; }
+            QWidget#welcomePanel { background: transparent; }
             QLabel#welcomeTitle {
-                color: #111a35;
-                font-size: 36px;
-                font-weight: 400;
+                color: #0f172a;
+                font-size: 34px;
+                font-weight: 600;
+                letter-spacing: -0.5px;
             }
             QLabel#welcomeSubtitle {
-                color: #c8cbd4;
-                font-size: 36px;
-                font-weight: 400;
+                color: #94a3b8;
+                font-size: 28px;
+                font-weight: 300;
             }
             QLabel#chipsLabel {
-                color: #9ba3b4;
+                color: #64748b;
                 font-size: 11px;
                 font-weight: 600;
-                letter-spacing: 0.5px;
+                letter-spacing: 0.8px;
+                text-transform: uppercase;
             }
             QPushButton#suggestionButton {
-                background: #ffffff;
-                border: 1.5px solid #e4e8f0;
-                border-radius: 9px;
-                color: #2d3a55;
-                padding: 8px 12px;
+                background: rgba(255, 255, 255, 0.75);
+                border: 1px solid rgba(203, 213, 225, 0.7);
+                border-radius: 20px;
+                color: #334155;
+                padding: 8px 16px;
                 font-size: 12px;
                 font-weight: 500;
-                text-align: left;
+                text-align: center;
             }
             QPushButton#suggestionButton:hover {
-                background: #f0f6ff;
-                border-color: #347be8;
-                color: #1a2a4a;
+                background: rgba(239, 246, 255, 0.95);
+                border-color: #3b82f6;
+                color: #1d4ed8;
             }
 
-            /* ── Conversation list ────────────────────────────── */
+            /* ── Conversation List ────────────────────────────── */
             QListWidget#conversationList {
-                background: #ffffff;
+                background: transparent;
                 border: none;
-                padding: 14px 16px;
+                padding: 14px 18px;
             }
             QListWidget#conversationList::item {
                 background: transparent;
                 border: none;
-                color: transparent;
                 padding: 0;
             }
             QScrollBar:vertical {
-                background: #f4f4f7;
-                width: 5px;
+                background: transparent;
+                width: 6px;
                 border-radius: 3px;
+                margin: 4px 2px;
             }
             QScrollBar::handle:vertical {
-                background: #d0cedd;
+                background: rgba(148, 163, 184, 0.4);
                 border-radius: 3px;
-                min-height: 24px;
+                min-height: 28px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: rgba(100, 116, 139, 0.6);
             }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
                 height: 0;
             }
 
-            /* ── Message bubbles ──────────────────────────────── */
+            /* ── Message Bubbles ──────────────────────────────── */
             QFrame#astraBubble {
-                background: #f8f9fc;
-                border: 1px solid #eaebf0;
-                border-radius: 14px;
+                background: rgba(248, 250, 252, 0.9);
+                border: 1px solid rgba(226, 232, 240, 0.85);
+                border-radius: 16px;
                 border-top-left-radius: 4px;
             }
             QFrame#userBubble {
-                background: #211d3d;
-                border: 1px solid #211d3d;
-                border-radius: 14px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1e293b, stop:1 #0f172a);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 16px;
                 border-top-right-radius: 4px;
             }
             QFrame#errorBubble {
-                background: #fff4f5;
-                border: 1px solid #f5c7ce;
-                border-radius: 14px;
+                background: rgba(254, 242, 242, 0.9);
+                border: 1px solid rgba(254, 202, 202, 0.85);
+                border-radius: 16px;
             }
             QLabel#bubbleSender {
-                color: #8e8b9d;
+                color: #64748b;
                 font-size: 10px;
                 font-weight: 700;
-                letter-spacing: 1px;
+                letter-spacing: 0.8px;
             }
             QLabel#bubbleTimestamp {
-                color: #b8b5c6;
+                color: #94a3b8;
                 font-size: 10px;
             }
             QLabel#bubbleText {
-                color: #242139;
+                color: #0f172a;
                 font-size: 13px;
                 line-height: 1.55;
             }
             QLabel#bubbleTextUser {
-                color: #f0eeff;
+                color: #f8fafc;
                 font-size: 13px;
                 line-height: 1.55;
             }
 
-            /* ── Status bar ───────────────────────────────────── */
+            /* ── Status Bar ───────────────────────────────────── */
             QLabel#statusLabel {
-                color: #8290a6;
+                color: #64748b;
                 font-size: 11px;
                 background: transparent;
                 padding: 4px 24px;
             }
 
             /* ── Composer ─────────────────────────────────────── */
-            QWidget#composerOuter { background: #ffffff; }
+            QWidget#composerOuter { background: transparent; }
             QFrame#composerFrame {
-                background: #ffffff;
-                border: 1px solid #d9e2ee;
-                border-radius: 14px;
+                background: rgba(255, 255, 255, 0.92);
+                border: 1.5px solid rgba(203, 213, 225, 0.7);
+                border-radius: 16px;
             }
             QFrame#composerFrame:focus-within {
-                border: 2px solid #347be8;
+                border: 1.5px solid #3b82f6;
+                background: #ffffff;
             }
             QLineEdit#messageInput {
                 background: transparent;
                 border: none;
-                padding: 8px 6px;
-                color: #131a2f;
-                font-size: 14px;
+                padding: 8px 10px;
+                color: #0f172a;
+                font-size: 13px;
             }
 
             /* ── Buttons ──────────────────────────────────────── */
-            QPushButton {
-                border-radius: 8px;
-                font-weight: 600;
-                font-size: 13px;
-            }
             QPushButton#sendButton {
-                background: #347be8;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #3b82f6, stop:1 #2563eb);
                 color: #ffffff;
                 border: none;
-                padding: 0 20px;
+                padding: 0 18px;
                 min-height: 36px;
-                min-width: 90px;
+                min-width: 72px;
+                border-radius: 8px;
+                font-weight: 600;
+                font-size: 12px;
             }
-            QPushButton#sendButton:hover { background: #2563c7; }
-            QPushButton#sendButton:pressed { background: #1d4ed8; }
+            QPushButton#sendButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2563eb, stop:1 #1d4ed8);
+            }
             QPushButton#sendButton:disabled {
                 background: #cbd5e1;
                 color: #64748b;
             }
             QPushButton#iconButton {
-                background: #f4f3f9;
-                border: 1px solid #d9e2ee;
-                color: #52627a;
-                font-size: 16px;
-                border-radius: 10px;
+                background: rgba(241, 245, 249, 0.8);
+                border: 1px solid rgba(203, 213, 225, 0.8);
+                color: #334155;
+                font-size: 12px;
+                font-weight: 600;
+                border-radius: 8px;
+                padding: 0 12px;
             }
             QPushButton#iconButton:hover {
-                background: #eff6ff;
-                border-color: #93c5fd;
-                color: #2563c7;
+                background: rgba(239, 246, 255, 0.95);
+                border-color: #3b82f6;
+                color: #1d4ed8;
             }
             QPushButton#iconButtonActive {
                 background: #fee2e2;
                 border: 1.5px solid #ef4444;
                 color: #ef4444;
-                font-size: 16px;
-                border-radius: 10px;
-            }
-            QPushButton#iconButtonActive:hover {
-                background: #fecaca;
-                border-color: #dc2626;
+                font-size: 12px;
+                font-weight: 600;
+                border-radius: 8px;
+                padding: 0 12px;
             }
             QPushButton#ghostButton {
                 background: transparent;
-                color: #57536b;
-                border: 1px solid #e0dded;
-                padding: 0 14px;
-                min-height: 30px;
+                border: 1px solid rgba(203, 213, 225, 0.7);
+                border-radius: 8px;
+                color: #334155;
                 font-size: 12px;
+                font-weight: 500;
+                padding: 6px 12px;
             }
             QPushButton#ghostButton:hover {
-                background: #f4f2fb;
-                color: #211d3d;
+                background: rgba(241, 245, 249, 0.8);
+                color: #0f172a;
             }
             QPushButton:disabled { opacity: 0.45; }
             """

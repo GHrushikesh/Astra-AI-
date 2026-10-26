@@ -102,10 +102,10 @@ class AstraAICore(AssistantInterface):
 
             return AssistantResponse(
                 text=(
-                    f"👋 **Welcome to Astra!**\n\n"
-                    f"To enable AI intelligence, please open **Settings** (⚙ in the sidebar) "
-                    f"and enter your **{self.client.provider} API Key**.\n\n"
-                    f"💡 *Tip: You can also use direct commands right now, like:*\n"
+                    f"**Welcome to Astra**\n\n"
+                    f"To enable AI intelligence, please open **Settings** (in the sidebar) "
+                    f"and enter your **Google Gemini API Key**.\n\n"
+                    f"*Tip: You can also use direct commands right now, like:*\n"
                     f"- `open chrome` or `open notepad`\n"
                     f"- `volume up` or `mute`\n"
                     f"- `take screenshot`\n"
@@ -148,7 +148,7 @@ class AstraAICore(AssistantInterface):
             if not result.success and result.error == "ConfirmationRequired":
                 self._pending_confirmation = action_name
                 return AssistantResponse(
-                    text=f"⚠️ {result.message}\n\nPlease reply **'Yes'** to confirm or **'No'** to cancel.",
+                    text=f"{result.message}\n\nPlease reply **'Yes'** to confirm or **'No'** to cancel.",
                     success=True,
                 )
 
