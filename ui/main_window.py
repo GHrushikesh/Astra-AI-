@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import (
@@ -24,6 +25,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -35,6 +37,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -43,6 +46,33 @@ from PySide6.QtWidgets import (
 )
 
 from ui.assistant_interface import AssistantInterface, AssistantResponse, EchoAssistant
+from ui.settings import AstraSettings, SettingsStore
+
+# TTS package
+try:
+    from tts.synthesizer import SpeechSynthesizer as _SpeechSynthesizer
+    from tts.synthesizer import enumerate_voices as _enumerate_voices
+    _TTS_AVAILABLE = True
+except ImportError:
+    _TTS_AVAILABLE = False
+    _SpeechSynthesizer = None  # type: ignore[assignment,misc]
+
+    def _enumerate_voices() -> list[str]:  # type: ignore[misc]
+        return ["Default speaker"]
+
+# Voice package — optional dependency (requires SpeechRecognition + PyAudio)
+try:
+    from voice.devices import enumerate_microphones as _enumerate_microphones
+    from voice.exceptions import VoiceError as _VoiceError
+    from voice.listener import SpeechListener as _SpeechListener
+    _VOICE_AVAILABLE = True
+except ImportError:
+    _VOICE_AVAILABLE = False
+    _SpeechListener = None        # type: ignore[assignment,misc]
+    _VoiceError = Exception        # type: ignore[assignment,misc]
+
+    def _enumerate_microphones() -> list[str]:  # type: ignore[misc]
+        return ["Default microphone"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -75,6 +105,62 @@ class _AssistantWorker(QThread):
                 error=str(exc),
             )
         self.response_ready.emit(response)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Voice worker thread
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _VoiceWorker(QThread):
+    """Record one phrase from the microphone on a background thread.
+
+    Emits ``text_ready`` with the transcript on success, or
+    ``error_occurred`` with a human-readable message on any failure.
+    The worker never modifies the UI directly.
+    """
+
+    text_ready = Signal(str)
+    error_occurred = Signal(str)
+
+    def __init__(self, listener: object) -> None:  # listener: _SpeechListener
+        super().__init__()
+        self._listener = listener
+
+    def run(self) -> None:
+        try:
+            text: str = self._listener.listen()  # type: ignore[union-attr]
+            self.text_ready.emit(text)
+        except _VoiceError as exc:
+            self.error_occurred.emit(str(exc))
+        except Exception as exc:
+            self.error_occurred.emit(f"Unexpected voice error: {exc}")
+
+
+class _TTSWorker(QThread):
+    """Run speech synthesis on a background thread."""
+
+    speech_finished = Signal()
+
+    def __init__(self, synthesizer: object, text: str) -> None:
+        super().__init__()
+        self._synthesizer = synthesizer
+        self._text = text
+
+    def run(self) -> None:
+        try:
+            if self._synthesizer:
+                self._synthesizer.speak(self._text)  # type: ignore[union-attr]
+        except Exception:
+            pass
+        finally:
+            self.speech_finished.emit()
+
+    def stop(self) -> None:
+        try:
+            if self._synthesizer:
+                self._synthesizer.stop()  # type: ignore[union-attr]
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -248,11 +334,42 @@ class _MessageBubble(QWidget):
 # Settings dialog
 # ─────────────────────────────────────────────────────────────────────────────
 
-class _SettingsDialog(QDialog):
-    """Modal settings panel with a clean, styled layout."""
+_ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+
+def _ensure_ui_assets() -> None:
+    """Ensure SVG icons required for clean UI elements exist."""
+    _ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    check_file = _ASSETS_DIR / "check_white.svg"
+    if not check_file.exists():
+        check_file.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" '
+            'stroke="#ffffff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">'
+            '<polyline points="20 6 9 17 4 12"/></svg>',
+            encoding="utf-8",
+        )
+    chevron_file = _ASSETS_DIR / "chevron_down.svg"
+    if not chevron_file.exists():
+        chevron_file.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" '
+            'stroke="#64748b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">'
+            '<polyline points="6 9 12 15 18 9"/></svg>',
+            encoding="utf-8",
+        )
+
+
+class _SettingsDialog(QDialog):
+    """Modal settings panel backed by the persistent settings store."""
+
+    def __init__(
+        self,
+        settings: AstraSettings,
+        store: SettingsStore,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._settings = settings
+        self._store = store
         self.setWindowTitle("Astra · Settings")
         self.setModal(True)
         self.setMinimumWidth(380)
@@ -274,34 +391,91 @@ class _SettingsDialog(QDialog):
         sep.setObjectName("settingsSep")
         root.addWidget(sep)
 
+        # Voice section
+        root.addWidget(self._section_label("Voice"))
+        voice_form = QFormLayout()
+        voice_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        voice_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        voice_form.setHorizontalSpacing(16)
+        voice_form.setVerticalSpacing(10)
+
+        # Microphone — populated from the voice service (real devices when available)
+        self.microphone = QComboBox()
+        mic_devices = _enumerate_microphones()
+        for dev in mic_devices:
+            self.microphone.addItem(dev)
+        if self._settings.microphone not in mic_devices:
+            self.microphone.addItem(self._settings.microphone)
+        self.microphone.setCurrentText(self._settings.microphone)
+        self.microphone.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        # Speaker — populated from TTS voice enumeration
+        self.speaker = QComboBox()
+        spk_devices = _enumerate_voices()
+        for spk in spk_devices:
+            self.speaker.addItem(spk)
+        if self._settings.speaker not in spk_devices:
+            self.speaker.addItem(self._settings.speaker)
+        self.speaker.setCurrentText(self._settings.speaker)
+        self.speaker.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        mic_lbl = QLabel("Microphone")
+        mic_lbl.setObjectName("settingsRowLabel")
+        speaker_lbl = QLabel("Speaker")
+        speaker_lbl.setObjectName("settingsRowLabel")
+        voice_form.addRow(mic_lbl, self.microphone)
+        voice_form.addRow(speaker_lbl, self.speaker)
+
+        speed_row = QHBoxLayout()
+        speed_lbl = QLabel("Speech speed")
+        speed_lbl.setObjectName("settingsRowLabel")
+        speed_row.addWidget(speed_lbl)
+        speed_row.addStretch()
+        self.speech_speed = QSpinBox()
+        self.speech_speed.setObjectName("settingsSpinBox")
+        self.speech_speed.setRange(80, 300)
+        self.speech_speed.setValue(self._settings.speech_speed)
+        self.speech_speed.setSuffix(" words/min")
+        speed_row.addWidget(self.speech_speed)
+        voice_form.addRow(speed_row)
+
+        root.addLayout(voice_form)
+
         # Appearance section
         root.addWidget(self._section_label("Appearance"))
+        app_form = QFormLayout()
+        app_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        app_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        app_form.setHorizontalSpacing(16)
+        app_form.setVerticalSpacing(10)
+
+        theme_lbl = QLabel("Theme")
+        theme_lbl.setObjectName("settingsRowLabel")
+        self.theme = QComboBox()
+        self.theme.addItems(["Light", "Dark", "System"])
+        self.theme.setCurrentText(self._settings.theme)
+        self.theme.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        app_form.addRow(theme_lbl, self.theme)
+
         self.compact_mode = QCheckBox("Compact message spacing")
         self.compact_mode.setObjectName("settingsCheck")
-        root.addWidget(self.compact_mode)
+        self.compact_mode.setChecked(self._settings.compact_messages)
+        app_form.addRow("", self.compact_mode)
+        root.addLayout(app_form)
 
         # Notifications section
         root.addWidget(self._section_label("Notifications"))
         self.notifications = QCheckBox("Show desktop notifications")
         self.notifications.setObjectName("settingsCheck")
-        self.notifications.setChecked(True)
+        self.notifications.setChecked(self._settings.notifications_enabled)
         root.addWidget(self.notifications)
 
-        # Typing speed (future placeholder)
-        root.addWidget(self._section_label("Response"))
-        speed_row = QHBoxLayout()
-        speed_row.setSpacing(10)
-        speed_lbl = QLabel("Max response length")
-        speed_lbl.setObjectName("settingsRowLabel")
-        self.max_len = QSpinBox()
-        self.max_len.setRange(100, 4000)
-        self.max_len.setValue(1000)
-        self.max_len.setSuffix(" tokens")
-        self.max_len.setObjectName("settingsSpinBox")
-        speed_row.addWidget(speed_lbl)
-        speed_row.addStretch()
-        speed_row.addWidget(self.max_len)
-        root.addLayout(speed_row)
+        # Startup section
+        root.addWidget(self._section_label("Startup"))
+        self.start_with_windows = QCheckBox("Start Astra with Windows")
+        self.start_with_windows.setObjectName("settingsCheck")
+        self.start_with_windows.setChecked(self._settings.start_with_windows)
+        root.addWidget(self.start_with_windows)
 
         root.addSpacing(8)
 
@@ -310,7 +484,7 @@ class _SettingsDialog(QDialog):
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.setObjectName("settingsButtons")
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
@@ -321,82 +495,171 @@ class _SettingsDialog(QDialog):
         return lbl
 
     def _style(self) -> None:
+        _ensure_ui_assets()
+        check_path = (_ASSETS_DIR / "check_white.svg").as_posix()
+        chevron_path = (_ASSETS_DIR / "chevron_down.svg").as_posix()
+
         self.setStyleSheet(
-            """
-            QDialog {
+            f"""
+            QDialog {{
                 background: #ffffff;
                 font-family: 'Segoe UI', Arial, sans-serif;
-            }
-            QLabel#settingsTitle {
-                font-size: 18px;
+            }}
+            QLabel#settingsTitle {{
+                font-size: 20px;
                 font-weight: 700;
                 color: #111a35;
-            }
-            QFrame#settingsSep {
-                background: #ebeaf1;
+            }}
+            QFrame#settingsSep {{
+                background: #eef1f5;
                 border: none;
                 max-height: 1px;
-            }
-            QLabel#settingsSection {
+            }}
+            QLabel#settingsSection {{
                 font-size: 11px;
                 font-weight: 700;
-                color: #8a8fa0;
+                color: #64748b;
                 letter-spacing: 1px;
                 text-transform: uppercase;
-                padding-top: 4px;
-            }
-            QLabel#settingsRowLabel {
+                padding-top: 6px;
+            }}
+            QLabel#settingsRowLabel {{
                 font-size: 13px;
-                color: #242139;
-            }
-            QCheckBox#settingsCheck {
+                font-weight: 500;
+                color: #334155;
+            }}
+            QCheckBox#settingsCheck {{
                 font-size: 13px;
-                color: #242139;
-                spacing: 8px;
-            }
-            QCheckBox#settingsCheck::indicator {
-                width: 16px;
-                height: 16px;
-                border-radius: 4px;
-                border: 1.5px solid #cbc9d8;
+                color: #1e293b;
+                spacing: 10px;
+            }}
+            QCheckBox#settingsCheck::indicator {{
+                width: 18px;
+                height: 18px;
+                border-radius: 5px;
+                border: 1.5px solid #cbd5e1;
                 background: #ffffff;
-            }
-            QCheckBox#settingsCheck::indicator:checked {
+            }}
+            QCheckBox#settingsCheck::indicator:hover {{
+                border-color: #347be8;
+                background: #f0f6ff;
+            }}
+            QCheckBox#settingsCheck::indicator:checked {{
                 background: #347be8;
                 border-color: #347be8;
-            }
-            QSpinBox#settingsSpinBox {
-                background: #f4f6f9;
-                border: 1px solid #dfe4eb;
+                image: url("{check_path}");
+            }}
+            QCheckBox#settingsCheck::indicator:checked:hover {{
+                background: #2563c7;
+                border-color: #2563c7;
+                image: url("{check_path}");
+            }}
+            QSpinBox#settingsSpinBox {{
+                background: #f8fafc;
+                border: 1.5px solid #cbd5e1;
                 border-radius: 6px;
-                padding: 4px 8px;
-                color: #242139;
+                padding: 6px 10px;
+                color: #0f172a;
                 font-size: 13px;
-                min-width: 130px;
-            }
-            QDialogButtonBox#settingsButtons QPushButton {
-                min-width: 80px;
-                min-height: 32px;
-                border-radius: 7px;
+                min-width: 140px;
+            }}
+            QSpinBox#settingsSpinBox:focus {{
+                border-color: #347be8;
+                background: #ffffff;
+            }}
+            QComboBox {{
+                background: #f8fafc;
+                border: 1.5px solid #cbd5e1;
+                border-radius: 6px;
+                padding: 6px 30px 6px 12px;
+                color: #0f172a;
+                font-size: 13px;
+                min-width: 180px;
+            }}
+            QComboBox:focus, QComboBox:hover {{
+                border-color: #347be8;
+            }}
+            QComboBox::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: center right;
+                width: 26px;
+                border-left: none;
+            }}
+            QComboBox::down-arrow {{
+                image: url("{chevron_path}");
+                width: 12px;
+                height: 12px;
+                margin-right: 8px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: #ffffff;
+                color: #0f172a;
+                selection-background-color: #e0eafc;
+                selection-color: #1d4ed8;
+                border: 1.5px solid #cbd5e1;
+                border-radius: 6px;
+                padding: 4px;
+                outline: none;
+            }}
+            QComboBox QAbstractItemView::item {{
+                min-height: 28px;
+                padding: 4px 8px;
+                border-radius: 4px;
+                color: #0f172a;
+            }}
+            QComboBox QAbstractItemView::item:hover {{
+                background-color: #f1f5f9;
+                color: #0f172a;
+            }}
+            QComboBox QAbstractItemView::item:selected {{
+                background-color: #e0eafc;
+                color: #1d4ed8;
+            }}
+            QDialogButtonBox#settingsButtons QPushButton {{
+                min-width: 88px;
+                min-height: 34px;
+                border-radius: 8px;
                 font-weight: 600;
                 font-size: 13px;
                 padding: 0 16px;
-            }
-            QDialogButtonBox#settingsButtons QPushButton[text="OK"] {
-                background: #211d3d;
+            }}
+            QDialogButtonBox#settingsButtons QPushButton[text="OK"] {{
+                background: #347be8;
                 color: #ffffff;
                 border: none;
-            }
-            QDialogButtonBox#settingsButtons QPushButton[text="Cancel"] {
-                background: transparent;
-                color: #57536b;
-                border: 1px solid #dedce8;
-            }
-            QDialogButtonBox#settingsButtons QPushButton[text="Cancel"]:hover {
-                background: #f4f6f9;
-            }
+            }}
+            QDialogButtonBox#settingsButtons QPushButton[text="OK"]:hover {{
+                background: #2563c7;
+            }}
+            QDialogButtonBox#settingsButtons QPushButton[text="Cancel"] {{
+                background: #ffffff;
+                color: #475569;
+                border: 1.5px solid #cbd5e1;
+            }}
+            QDialogButtonBox#settingsButtons QPushButton[text="Cancel"]:hover {{
+                background: #f8fafc;
+                color: #0f172a;
+            }}
             """
         )
+
+    def _save(self) -> None:
+        settings = AstraSettings(
+            microphone=self.microphone.currentText(),
+            speaker=self.speaker.currentText(),
+            speech_speed=self.speech_speed.value(),
+            notifications_enabled=self.notifications.isChecked(),
+            theme=self.theme.currentText(),
+            start_with_windows=self.start_with_windows.isChecked(),
+            compact_messages=self.compact_mode.isChecked(),
+        )
+        try:
+            self._store.save(settings)
+        except OSError as exc:
+            QMessageBox.critical(self, "Settings not saved", str(exc))
+            return
+        self._settings.__dict__.update(settings.__dict__)
+        self.accept()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -417,10 +680,24 @@ class MainWindow(QMainWindow):
         self,
         assistant: Optional[AssistantInterface] = None,
         parent: Optional[QWidget] = None,
+        settings_store: SettingsStore | None = None,
     ) -> None:
         super().__init__(parent)
         self._assistant = assistant or EchoAssistant()
+        self._settings_store = settings_store or SettingsStore()
+        self._settings_load_error: str | None = None
+        try:
+            self._settings = self._settings_store.load()
+        except ValueError as exc:
+            self._settings = AstraSettings()
+            self._settings_load_error = str(exc)
         self._worker: Optional[_AssistantWorker] = None
+        self._voice_worker: Optional[_VoiceWorker] = None
+        self._tts_worker: Optional[_TTSWorker] = None
+        self._tts_synthesizer = _SpeechSynthesizer(
+            voice_name=self._settings.speaker,
+            speed_wpm=self._settings.speech_speed,
+        ) if _TTS_AVAILABLE else None
         self._sessions: list[dict[str, object]] = []
         self._current_session: dict[str, object] = {}
         self._sidebar_collapsed = False
@@ -561,6 +838,11 @@ class MainWindow(QMainWindow):
 
         self.connection_label = QLabel("● Ready")
         self.connection_label.setObjectName("pillReady")
+        self.connection_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.connection_label.setFixedSize(78, 30)
+        self.connection_label.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         hl.addWidget(self.connection_label)
 
         self.settings_button = QPushButton("⚙  Settings")
@@ -685,8 +967,15 @@ class MainWindow(QMainWindow):
         self.microphone_button = QPushButton("🎤")
         self.microphone_button.setObjectName("iconButton")
         self.microphone_button.setFixedSize(40, 40)
-        self.microphone_button.setToolTip("Voice input (coming soon)")
-        self.microphone_button.clicked.connect(self.microphone_requested)
+        if _VOICE_AVAILABLE:
+            self.microphone_button.setToolTip("Click to speak (voice input)")
+            self.microphone_button.clicked.connect(self._start_voice_input)
+        else:
+            self.microphone_button.setToolTip(
+                "Voice input unavailable — install SpeechRecognition and PyAudio"
+            )
+            self.microphone_button.setEnabled(False)
+            self.microphone_button.clicked.connect(self.microphone_requested)
         cmp.addWidget(self.microphone_button)
 
         self.send_button = QPushButton("Send  ↑")
@@ -700,9 +989,11 @@ class MainWindow(QMainWindow):
 
         root.addWidget(content, 1)
 
-        self._apply_style()
+        self._apply_settings()
         self._current_session = self._new_session("New conversation")
         self._add_message("assistant", "Hello! I'm Astra — how can I help you today?")
+        if self._settings_load_error:
+            self.status_label.setText("Settings could not be loaded; defaults are in use")
 
     # ── Stylesheet ────────────────────────────────────────────────────────────
 
@@ -840,16 +1131,27 @@ class MainWindow(QMainWindow):
             QLabel#pillReady {
                 background: #e9fbf2;
                 color: #16834f;
+                border: 1px solid #c8f0d9;
                 border-radius: 12px;
-                padding: 4px 14px;
+                padding: 0;
                 font-size: 11px;
                 font-weight: 600;
             }
             QLabel#pillThinking {
-                background: #fff0f7;
-                color: #c9246e;
+                background: #fff7ed;
+                color: #c2410c;
+                border: 1px solid #fed7aa;
                 border-radius: 12px;
-                padding: 4px 14px;
+                padding: 0;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            QLabel#pillListening {
+                background: #eff6ff;
+                color: #1d4ed8;
+                border: 1px solid #bfdbfe;
+                border-radius: 12px;
+                padding: 0;
                 font-size: 11px;
                 font-weight: 600;
             }
@@ -956,20 +1258,21 @@ class MainWindow(QMainWindow):
 
             /* ── Status bar ───────────────────────────────────── */
             QLabel#statusLabel {
-                color: #a0a8bc;
+                color: #8290a6;
                 font-size: 11px;
-                background: #ffffff;
+                background: transparent;
+                padding: 4px 24px;
             }
 
             /* ── Composer ─────────────────────────────────────── */
             QWidget#composerOuter { background: #ffffff; }
             QFrame#composerFrame {
                 background: #ffffff;
-                border: 1.5px solid #e4e7ed;
+                border: 1px solid #d9e2ee;
                 border-radius: 14px;
             }
             QFrame#composerFrame:focus-within {
-                border-color: #347be8;
+                border: 2px solid #347be8;
             }
             QLineEdit#messageInput {
                 background: transparent;
@@ -986,30 +1289,41 @@ class MainWindow(QMainWindow):
                 font-size: 13px;
             }
             QPushButton#sendButton {
-                background: #211d3d;
+                background: #347be8;
                 color: #ffffff;
                 border: none;
                 padding: 0 20px;
                 min-height: 36px;
                 min-width: 90px;
             }
-            QPushButton#sendButton:hover { background: #342e5a; }
-            QPushButton#sendButton:pressed { background: #160f2e; }
+            QPushButton#sendButton:hover { background: #2563c7; }
+            QPushButton#sendButton:pressed { background: #1d4ed8; }
             QPushButton#sendButton:disabled {
-                background: #dddbe8;
-                color: #a09cb4;
+                background: #cbd5e1;
+                color: #64748b;
             }
             QPushButton#iconButton {
                 background: #f4f3f9;
-                border: 1px solid #e2e0eb;
-                color: #6f6a82;
+                border: 1px solid #d9e2ee;
+                color: #52627a;
                 font-size: 16px;
                 border-radius: 10px;
             }
             QPushButton#iconButton:hover {
-                background: #fff0f7;
-                border-color: #e08cbf;
-                color: #c9246e;
+                background: #eff6ff;
+                border-color: #93c5fd;
+                color: #2563c7;
+            }
+            QPushButton#iconButtonActive {
+                background: #fee2e2;
+                border: 1.5px solid #ef4444;
+                color: #ef4444;
+                font-size: 16px;
+                border-radius: 10px;
+            }
+            QPushButton#iconButtonActive:hover {
+                background: #fecaca;
+                border-color: #dc2626;
             }
             QPushButton#ghostButton {
                 background: transparent;
@@ -1102,8 +1416,412 @@ class MainWindow(QMainWindow):
     # ── Settings ──────────────────────────────────────────────────────────────
 
     def _show_settings(self) -> None:
-        dialog = _SettingsDialog(self)
-        dialog.exec()
+        dialog = _SettingsDialog(self._settings, self._settings_store, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._apply_settings()
+
+    def _apply_settings(self) -> None:
+        """Apply active preferences to the running application."""
+        # Spacing
+        self.conversation.setSpacing(3 if self._settings.compact_messages else 6)
+        # Theme
+        if self._settings.theme == "Dark":
+            self._apply_dark_style()
+        else:
+            self._apply_style()
+        # Update TTS synthesizer settings
+        if self._tts_synthesizer:
+            self._tts_synthesizer.voice_name = self._settings.speaker
+            self._tts_synthesizer.speed_wpm = self._settings.speech_speed
+
+    def _apply_dark_style(self) -> None:
+        """Dark theme stylesheet."""
+        self.setStyleSheet(
+            """
+            QWidget {
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 13px;
+            }
+            QWidget#centralWidget {
+                background: #0f172a;
+            }
+            QWidget#sidebar {
+                background: #1e293b;
+                border-right: 1px solid #334155;
+            }
+            QLabel#sidebarBrand {
+                color: #f8fafc;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            QLabel#sidebarSection {
+                color: #94a3b8;
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 1.5px;
+                padding: 3px 4px 1px 4px;
+            }
+            QListWidget#chatHistory {
+                background: transparent;
+                border: none;
+                outline: none;
+                color: #cbd5e1;
+                font-size: 12px;
+            }
+            QListWidget#chatHistory::item {
+                padding: 6px 8px;
+                border-radius: 7px;
+                margin: 1px 0;
+            }
+            QListWidget#chatHistory::item:hover {
+                background: #334155;
+                color: #f8fafc;
+            }
+            QListWidget#chatHistory::item:selected {
+                background: #2563eb;
+                color: #ffffff;
+            }
+            QLineEdit#chatSearch {
+                background: #0f172a;
+                border: 1.5px solid #334155;
+                border-radius: 7px;
+                padding: 6px 10px;
+                color: #f8fafc;
+                font-size: 12px;
+            }
+            QLineEdit#chatSearch:focus {
+                border-color: #3b82f6;
+            }
+            QLabel#accountLabel {
+                color: #60a5fa;
+                font-size: 11px;
+                font-weight: 600;
+                padding: 10px 4px 2px 4px;
+                border-top: 1px solid #334155;
+            }
+            QPushButton#sidebarButton {
+                background: transparent;
+                border: none;
+                color: #cbd5e1;
+                text-align: left;
+                padding: 8px 6px;
+                font-size: 12px;
+                border-radius: 7px;
+            }
+            QPushButton#sidebarButton:hover {
+                background: #334155;
+                color: #f8fafc;
+            }
+            QPushButton#sidebarIcon {
+                background: transparent;
+                border: none;
+                color: #94a3b8;
+                font-size: 14px;
+                border-radius: 5px;
+            }
+            QPushButton#sidebarIcon:hover {
+                background: #334155;
+                color: #f8fafc;
+            }
+            QPushButton#newChatButton {
+                background: #2563eb;
+                border: none;
+                border-radius: 8px;
+                color: #ffffff;
+                text-align: left;
+                padding: 9px 10px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton#newChatButton:hover {
+                background: #1d4ed8;
+            }
+            QWidget#contentPanel {
+                background: #1e293b;
+                border: 1px solid #334155;
+                border-radius: 14px;
+                margin: 8px 8px 8px 0;
+            }
+            QWidget#headerBar {
+                background: #1e293b;
+                border-top-left-radius: 14px;
+                border-top-right-radius: 14px;
+            }
+            QFrame#headerSep {
+                background: #334155;
+                border: none;
+            }
+            QLabel#headerChatTitle {
+                color: #f8fafc;
+                font-size: 14px;
+                font-weight: 600;
+            }
+            QLabel#pillReady {
+                background: #064e3b;
+                color: #6ee7b7;
+                border: 1px solid #047857;
+                border-radius: 12px;
+                padding: 0;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            QLabel#pillThinking {
+                background: #7c2d12;
+                color: #fdba74;
+                border: 1px solid #9a3412;
+                border-radius: 12px;
+                padding: 0;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            QLabel#pillListening {
+                background: #1e3a8a;
+                color: #93c5fd;
+                border: 1px solid #2563eb;
+                border-radius: 12px;
+                padding: 0;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            QWidget#chatWrapper { background: #1e293b; }
+            QWidget#welcomePanel { background: #1e293b; }
+            QLabel#welcomeTitle {
+                color: #f8fafc;
+                font-size: 36px;
+                font-weight: 400;
+            }
+            QLabel#welcomeSubtitle {
+                color: #64748b;
+                font-size: 36px;
+                font-weight: 400;
+            }
+            QLabel#chipsLabel {
+                color: #94a3b8;
+                font-size: 11px;
+                font-weight: 600;
+                letter-spacing: 0.5px;
+            }
+            QPushButton#suggestionButton {
+                background: #0f172a;
+                border: 1.5px solid #334155;
+                border-radius: 9px;
+                color: #cbd5e1;
+                padding: 8px 12px;
+                font-size: 12px;
+                font-weight: 500;
+                text-align: left;
+            }
+            QPushButton#suggestionButton:hover {
+                background: #1e3a8a;
+                border-color: #3b82f6;
+                color: #ffffff;
+            }
+            QListWidget#conversationList {
+                background: #1e293b;
+                border: none;
+                padding: 14px 16px;
+            }
+            QListWidget#conversationList::item {
+                background: transparent;
+                border: none;
+                color: transparent;
+                padding: 0;
+            }
+            QScrollBar:vertical {
+                background: #0f172a;
+                width: 6px;
+                border-radius: 3px;
+            }
+            QScrollBar::handle:vertical {
+                background: #475569;
+                border-radius: 3px;
+                min-height: 24px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
+            }
+            QFrame#astraBubble {
+                background: #0f172a;
+                border: 1px solid #334155;
+                border-radius: 14px;
+                border-top-left-radius: 4px;
+            }
+            QFrame#userBubble {
+                background: #2563eb;
+                border: 1px solid #1d4ed8;
+                border-radius: 14px;
+                border-top-right-radius: 4px;
+            }
+            QFrame#errorBubble {
+                background: #450a0a;
+                border: 1px solid #7f1d1d;
+                border-radius: 14px;
+            }
+            QLabel#bubbleSender {
+                color: #94a3b8;
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 1px;
+            }
+            QLabel#bubbleTimestamp {
+                color: #64748b;
+                font-size: 10px;
+            }
+            QLabel#bubbleText {
+                color: #f1f5f9;
+                font-size: 13px;
+                line-height: 1.55;
+            }
+            QLabel#bubbleTextUser {
+                color: #ffffff;
+                font-size: 13px;
+                line-height: 1.55;
+            }
+            QLabel#statusLabel {
+                color: #94a3b8;
+                font-size: 11px;
+                background: transparent;
+                padding: 4px 24px;
+            }
+            QWidget#composerOuter { background: #1e293b; }
+            QFrame#composerFrame {
+                background: #0f172a;
+                border: 1px solid #475569;
+                border-radius: 14px;
+            }
+            QFrame#composerFrame:focus-within {
+                border: 2px solid #60a5fa;
+            }
+            QLineEdit#messageInput {
+                background: transparent;
+                border: none;
+                padding: 8px 6px;
+                color: #f8fafc;
+                font-size: 14px;
+            }
+            QPushButton#sendButton {
+                background: #2563eb;
+                color: #ffffff;
+                border: none;
+                padding: 0 20px;
+                min-height: 36px;
+                min-width: 90px;
+            }
+            QPushButton#sendButton:hover { background: #1d4ed8; }
+            QPushButton#sendButton:disabled {
+                background: #475569;
+                color: #94a3b8;
+            }
+            QPushButton#iconButton {
+                background: #0f172a;
+                border: 1px solid #475569;
+                color: #94a3b8;
+                font-size: 16px;
+                border-radius: 10px;
+            }
+            QPushButton#iconButton:hover {
+                background: #1e3a8a;
+                border-color: #60a5fa;
+                color: #60a5fa;
+            }
+            QPushButton#iconButtonActive {
+                background: #7f1d1d;
+                border: 1.5px solid #ef4444;
+                color: #fca5a5;
+                font-size: 16px;
+                border-radius: 10px;
+            }
+            QPushButton#ghostButton {
+                background: transparent;
+                color: #94a3b8;
+                border: 1px solid #334155;
+                padding: 0 14px;
+                min-height: 30px;
+                font-size: 12px;
+            }
+            QPushButton#ghostButton:hover {
+                background: #334155;
+                color: #f8fafc;
+            }
+            QPushButton:disabled { opacity: 0.45; }
+            """
+        )
+
+    # ── Voice input ───────────────────────────────────────────────────────────
+
+    def _start_voice_input(self) -> None:
+        """Begin a microphone recording session on a background thread."""
+        if not _VOICE_AVAILABLE:
+            self._add_message(
+                "error",
+                "Voice input is unavailable. "
+                "Install the required libraries: pip install SpeechRecognition PyAudio",
+            )
+            return
+        # Prevent overlapping requests
+        if self._worker is not None or self._voice_worker is not None:
+            return
+
+        listener = _SpeechListener(microphone_name=self._settings.microphone)  # type: ignore[misc]
+        self._voice_worker = _VoiceWorker(listener)
+        self._voice_worker.text_ready.connect(self._on_voice_text)
+        self._voice_worker.error_occurred.connect(self._on_voice_error)
+        self._voice_worker.finished.connect(self._voice_finished)
+        self._voice_worker.start()
+        self._set_listening_state(True)
+
+    def _set_listening_state(self, listening: bool) -> None:
+        """Toggle the UI between idle and actively-listening states."""
+        if listening:
+            self.status_label.setText("Listening…  Speak now")
+            self.connection_label.setText("● Listening")
+            self.connection_label.setObjectName("pillListening")
+            self.microphone_button.setObjectName("iconButtonActive")
+            self.microphone_button.setToolTip("Listening… (click will cancel after phrase ends)")
+        else:
+            self.status_label.setText("Ready  ·  Type a message to get started")
+            self.connection_label.setText("● Ready")
+            self.connection_label.setObjectName("pillReady")
+            self.microphone_button.setObjectName("iconButton")
+            self.microphone_button.setToolTip("Click to speak (voice input)")
+
+        # Force Qt to re-evaluate objectName-based QSS rules
+        for widget in (self.connection_label, self.microphone_button):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+
+        self.send_button.setEnabled(not listening)
+        self.input.setEnabled(not listening)
+        if _VOICE_AVAILABLE:
+            self.microphone_button.setEnabled(not listening)
+
+    @Slot()
+    def _voice_finished(self) -> None:
+        """Clean up the voice worker after it completes or errors."""
+        worker = self._voice_worker
+        self._voice_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        self._set_listening_state(False)
+
+    def _on_voice_text(self, text: str) -> None:
+        """Handle a successfully recognised transcript.
+
+        The text is placed in the input field and submitted automatically so the
+        full flow — voice → AssistantInterface → response — happens seamlessly.
+        """
+        self._set_listening_state(False)
+        self.input.setText(text)
+        self.input.setFocus()
+        # Submit immediately so the recognised phrase goes to the assistant
+        self._submit_from_input()
+
+    def _on_voice_error(self, message: str) -> None:
+        """Display a voice error in the chat without crashing."""
+        self._set_listening_state(False)
+        self._add_message("error", f"Voice input: {message}")
+        self.status_label.setText("Voice input failed — try again")
+        self.input.setFocus()
 
     # ── Messaging ─────────────────────────────────────────────────────────────
 
@@ -1136,6 +1854,9 @@ class MainWindow(QMainWindow):
         self.connection_label.style().polish(self.connection_label)
         self.send_button.setEnabled(not thinking)
         self.input.setEnabled(not thinking)
+        # Mic button is only available when voice is installed and nothing is active
+        if _VOICE_AVAILABLE:
+            self.microphone_button.setEnabled(not thinking)
 
     @Slot()
     def _assistant_finished(self) -> None:
@@ -1149,10 +1870,32 @@ class MainWindow(QMainWindow):
         if response.success:
             self._add_message("assistant", response.text)
             self.status_label.setText("Ready")
+            self._speak_text(response.text)
         else:
             self._add_message("error", response.error or "The assistant is unavailable.")
             self.status_label.setText("Error — see message above for details")
         self.input.setFocus()
+
+    def _speak_text(self, text: str) -> None:
+        """Speak response text using TTS outside the UI thread."""
+        if not _TTS_AVAILABLE or not self._tts_synthesizer or not text.strip():
+            return
+        # Cancel any active TTS speech
+        if self._tts_worker is not None:
+            self._tts_worker.stop()
+            self._tts_worker.wait()
+            self._tts_worker = None
+
+        self._tts_worker = _TTSWorker(self._tts_synthesizer, text)
+        self._tts_worker.speech_finished.connect(self._tts_finished)
+        self._tts_worker.start()
+
+    @Slot()
+    def _tts_finished(self) -> None:
+        worker = self._tts_worker
+        self._tts_worker = None
+        if worker is not None:
+            worker.deleteLater()
 
     def _add_message(self, sender: str, text: str, record: bool = True) -> None:
         if record:
@@ -1200,10 +1943,14 @@ class MainWindow(QMainWindow):
         self.input.setFocus()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
-        worker = self._worker
-        if worker is not None:
-            worker.blockSignals(True)
-            if worker.isRunning():
-                worker.wait()
-            self._worker = None
+        if self._tts_worker is not None:
+            self._tts_worker.stop()
+        for worker in (self._worker, self._voice_worker, self._tts_worker):
+            if worker is not None:
+                worker.blockSignals(True)
+                if worker.isRunning():
+                    worker.wait()
+        self._worker = None
+        self._voice_worker = None
+        self._tts_worker = None
         event.accept()
