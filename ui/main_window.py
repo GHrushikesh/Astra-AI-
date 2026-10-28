@@ -10,6 +10,7 @@ from typing import Optional
 
 from PySide6.QtCore import (
     QEasingCurve,
+    QPoint,
     QPropertyAnimation,
     QRect,
     QSize,
@@ -19,6 +20,7 @@ from PySide6.QtCore import (
     Slot,
 )
 from PySide6.QtGui import (
+    QAction,
     QColor,
     QFont,
     QLinearGradient,
@@ -41,6 +43,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSizePolicy,
@@ -942,6 +945,8 @@ class MainWindow(QMainWindow):
         self.chat_history = QListWidget()
         self.chat_history.setObjectName("chatHistory")
         self.chat_history.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.chat_history.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.chat_history.customContextMenuRequested.connect(self._show_chat_context_menu)
         self.chat_history.itemClicked.connect(self._restore_chat)
         sb.addWidget(self.chat_history, 1)
 
@@ -1500,6 +1505,30 @@ class MainWindow(QMainWindow):
                 color: #1d1d1f;
             }}
             QPushButton:disabled {{ opacity: 0.4; }}
+
+            /* ── Context Menu ─────────────────────────────────── */
+            QMenu {{
+                background: #ffffff;
+                border: 1px solid #d2d2d7;
+                border-radius: 8px;
+                padding: 4px;
+            }}
+            QMenu::item {{
+                padding: 6px 14px;
+                border-radius: 5px;
+                color: #1d1d1f;
+                font-size: 12px;
+                font-weight: 500;
+            }}
+            QMenu::item:selected {{
+                background: #0071e3;
+                color: #ffffff;
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background: #e5e5ea;
+                margin: 4px 6px;
+            }}
             """
         )
 
@@ -1851,6 +1880,30 @@ class MainWindow(QMainWindow):
                 color: #f5f5f7;
             }}
             QPushButton:disabled {{ opacity: 0.4; }}
+
+            /* ── Context Menu ─────────────────────────────────── */
+            QMenu {{
+                background: #242428;
+                border: 1px solid #38383c;
+                border-radius: 8px;
+                padding: 4px;
+            }}
+            QMenu::item {{
+                padding: 6px 14px;
+                border-radius: 5px;
+                color: #f5f5f7;
+                font-size: 12px;
+                font-weight: 500;
+            }}
+            QMenu::item:selected {{
+                background: #0a84ff;
+                color: #ffffff;
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background: #38383c;
+                margin: 4px 6px;
+            }}
             """
         )
 
@@ -1904,10 +1957,83 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Ready  ·  Type a message to get started")
         self._set_thinking_state(False)
 
-    def _restore_chat(self, item: QListWidgetItem) -> None:
-        session = item.data(Qt.ItemDataRole.UserRole)
-        if not isinstance(session, dict):
+    def _show_chat_context_menu(self, pos: QPoint) -> None:
+        item = self.chat_history.itemAt(pos)
+        menu = QMenu(self)
+
+        del_action = None
+        target_session = None
+
+        if item is not None:
+            target_session = item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(target_session, dict):
+                del_action = menu.addAction("Delete Conversation")
+
+        clear_all_action = None
+        if len(self._sessions) > 1:
+            if del_action is not None:
+                menu.addSeparator()
+            clear_all_action = menu.addAction("Clear All Past Chats")
+
+        new_chat_action = None
+        if del_action is None and clear_all_action is None:
+            new_chat_action = menu.addAction("New Conversation")
+
+        if not menu.actions():
             return
+
+        global_pos = self.chat_history.viewport().mapToGlobal(pos)
+        chosen = menu.exec(global_pos)
+
+        if del_action and chosen == del_action and target_session:
+            self._delete_session(target_session)
+        elif clear_all_action and chosen == clear_all_action:
+            self._clear_all_sessions()
+        elif new_chat_action and chosen == new_chat_action:
+            self._start_new_chat()
+
+    def _delete_session(self, session: dict[str, object], confirm: bool = True) -> None:
+        title = str(session.get("title", "this conversation"))
+        if confirm:
+            reply = QMessageBox.question(
+                self,
+                "Delete Conversation",
+                f'Are you sure you want to delete "{title}"?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        if session in self._sessions:
+            self._sessions.remove(session)
+
+        if session is self._current_session:
+            if self._sessions:
+                self._restore_chat_by_session(self._sessions[0])
+            else:
+                self._start_new_chat()
+
+        self._refresh_chat_history()
+        self.status_label.setText("Conversation deleted")
+
+    def _clear_all_sessions(self, confirm: bool = True) -> None:
+        if confirm:
+            reply = QMessageBox.question(
+                self,
+                "Clear All Past Chats",
+                "Are you sure you want to delete all past conversations?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        self._sessions.clear()
+        self._start_new_chat()
+        self.status_label.setText("All conversations cleared")
+
+    def _restore_chat_by_session(self, session: dict[str, object]) -> None:
         self._current_session = session
         self.conversation.clear()
         messages: list = session.get("messages", [])  # type: ignore[assignment]
@@ -1917,6 +2043,12 @@ class MainWindow(QMainWindow):
         for sender, text in (messages or []):
             self._add_message(str(sender), str(text), record=False)
         self._sync_history_selection()
+
+    def _restore_chat(self, item: QListWidgetItem) -> None:
+        session = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(session, dict):
+            return
+        self._restore_chat_by_session(session)
 
     # ── Sidebar Collapse (Smooth Animation) ───────────────────────────────────
 

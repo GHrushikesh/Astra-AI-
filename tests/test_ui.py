@@ -108,6 +108,43 @@ class TestMainWindow(unittest.TestCase):
         self.assertTrue(window.status_label.text().startswith("Ready"))
         window.close()
 
+    def test_context_menu_policy_configured_on_chat_history(self):
+        from PySide6.QtCore import Qt
+        window = MainWindow()
+        self.assertEqual(
+            window.chat_history.contextMenuPolicy(),
+            Qt.ContextMenuPolicy.CustomContextMenu,
+        )
+        window.close()
+
+    def test_delete_session_removes_from_history(self):
+        window = MainWindow()
+        session1 = window._current_session
+        session2 = window._new_session("Second Chat")
+        self.assertEqual(len(window._sessions), 2)
+        self.assertEqual(window.chat_history.count(), 2)
+
+        # Delete session2 without confirmation dialog
+        window._delete_session(session2, confirm=False)
+        self.assertEqual(len(window._sessions), 1)
+        self.assertEqual(window.chat_history.count(), 1)
+        self.assertNotIn(session2, window._sessions)
+        self.assertEqual(window.status_label.text(), "Conversation deleted")
+        window.close()
+
+    def test_clear_all_sessions(self):
+        window = MainWindow()
+        window._new_session("Chat A")
+        window._new_session("Chat B")
+        self.assertGreater(len(window._sessions), 1)
+
+        # Clear all sessions without confirmation dialog
+        window._clear_all_sessions(confirm=False)
+        self.assertEqual(len(window._sessions), 1)
+        self.assertEqual(window._current_session["title"], "New conversation")
+        self.assertEqual(window.status_label.text(), "All conversations cleared")
+        window.close()
+
 
 if __name__ == "__main__":
     unittest.main()
