@@ -61,6 +61,29 @@ class TestTTS(unittest.TestCase):
         self.assertTrue(success)
         mock_popen.assert_called_once()
 
+    @patch("tts.synthesizer.platform.system", return_value="Windows")
+    @patch("tts.synthesizer.SpeechSynthesizer._speak_windows_powershell", return_value=True)
+    def test_windows_prefers_built_in_sapi(self, mock_windows, mock_platform):
+        synth = SpeechSynthesizer()
+        self.assertTrue(synth.speak("Windows speech"))
+        mock_windows.assert_called_once_with("Windows speech")
+
+    @patch("tts.synthesizer.platform.system", return_value="Windows")
+    @patch("tts.synthesizer.SpeechSynthesizer._speak_pyttsx3", side_effect=SynthesisError("driver unavailable"))
+    @patch("tts.synthesizer.SpeechSynthesizer._speak_windows_powershell", side_effect=SynthesisError("SAPI unavailable"))
+    @patch.dict("sys.modules", {"pyttsx3": MagicMock()})
+    def test_windows_falls_back_to_pyttsx3_when_sapi_fails(
+        self,
+        mock_windows,
+        mock_pyttsx,
+        mock_platform,
+    ):
+        synth = SpeechSynthesizer()
+        with self.assertRaises(SynthesisError):
+            synth.speak("Fallback test")
+        mock_windows.assert_called_once_with("Fallback test")
+        mock_pyttsx.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -104,6 +104,15 @@ The desktop UI features:
 - **Collapsible sidebar** via the ◧ button
 - **Settings dialog** with appearance, voice, speech speed, startup, and notification controls
 
+### Voice input and speech output
+
+Click **Voice** in the message composer to record one phrase. Astra transcribes it,
+sends the text through the normal assistant flow, and speaks the response without
+blocking the interface. On Windows, allow microphone access in **Settings >
+Privacy & security > Microphone**. Voice input requires `SpeechRecognition` and
+`PyAudio`; speech output uses `pyttsx3` and automatically falls back to Windows
+System.Speech if the optional driver cannot initialize.
+
 ---
 
 ### Integration Guide

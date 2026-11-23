@@ -284,6 +284,7 @@ class _TTSWorker(QThread):
     """Run speech synthesis on a background thread."""
 
     speech_finished = Signal()
+    error_occurred = Signal(str)
 
     def __init__(self, synthesizer: object, text: str) -> None:
         super().__init__()
@@ -293,9 +294,11 @@ class _TTSWorker(QThread):
     def run(self) -> None:
         try:
             if self._synthesizer:
-                self._synthesizer.speak(self._text)  # type: ignore[union-attr]
-        except Exception:
-            pass
+                completed = self._synthesizer.speak(self._text)  # type: ignore[union-attr]
+                if completed is False:
+                    self.error_occurred.emit("The speech synthesizer did not complete.")
+        except Exception as exc:
+            self.error_occurred.emit(str(exc))
         finally:
             self.speech_finished.emit()
 
@@ -2243,7 +2246,14 @@ class MainWindow(QMainWindow):
 
         self._tts_worker = _TTSWorker(self._tts_synthesizer, text)
         self._tts_worker.speech_finished.connect(self._tts_finished)
+        self._tts_worker.error_occurred.connect(self._on_tts_error)
         self._tts_worker.start()
+
+    @Slot(str)
+    def _on_tts_error(self, message: str) -> None:
+        """Report TTS failures without interrupting the text conversation."""
+        self._add_message("error", f"Voice output: {message}")
+        self.status_label.setText("Voice output failed — check speech settings")
 
     @Slot()
     def _tts_finished(self) -> None:

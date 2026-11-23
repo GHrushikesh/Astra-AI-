@@ -261,6 +261,74 @@ class TestAstraAICore(unittest.TestCase):
         self.assertEqual(core.client.model, "gpt-4o")
         self.assertEqual(core.client.endpoint, "https://custom.endpoint/v1")
 
+    def test_direct_create_folder_under_subfolder(self):
+        """Direct command 'create folder <path>' creates the nested directory immediately."""
+        core = AstraAICore(settings_store=self.store)
+        target = Path(self.temp_dir.name) / "e_drive_sim" / "some_folder" / "sub_folder"
+        res = core.process(f"create folder {target}")
+        self.assertTrue(res.success)
+        self.assertTrue(target.is_dir())
+        self.assertIn("created successfully", res.text.lower())
+
+    def test_direct_create_folder_in_location_syntax(self):
+        """Direct command 'create folder <name> in <loc>' creates folder properly."""
+        core = AstraAICore(settings_store=self.store)
+        parent = Path(self.temp_dir.name) / "workspace"
+        res = core.process(f"create folder my_project in {parent}")
+        self.assertTrue(res.success)
+        expected = parent / "my_project"
+        self.assertTrue(expected.is_dir())
+
+    def test_direct_open_folder_command(self):
+        """Direct command 'open folder <path>' calls open_folder."""
+        core = AstraAICore(settings_store=self.store)
+        target = Path(self.temp_dir.name) / "test_dir"
+        target.mkdir()
+
+        with patch("actions.file_actions.os.startfile") as mock_startfile:
+            res = core.process(f"open folder {target}")
+            self.assertTrue(res.success)
+            mock_startfile.assert_called_once_with(str(target.resolve()))
+
+    def test_direct_list_folder_command(self):
+        """Direct command 'list folder <path>' lists directory contents."""
+        core = AstraAICore(settings_store=self.store)
+        target = Path(self.temp_dir.name) / "browse_me"
+        target.mkdir()
+        (target / "doc.txt").write_text("content", encoding="utf-8")
+
+        res = core.process(f"list folder {target}")
+        self.assertTrue(res.success)
+        self.assertIn("doc.txt", res.text)
+
+    def test_direct_smart_create_folder_under_particular_folder(self):
+        """Direct command 'create a folder under d drive under this perticular folder <parent>'."""
+        core = AstraAICore(settings_store=self.store)
+        mock_parent = Path(self.temp_dir.name) / "mock_drive" / "sub" / "CineCritic"
+        mock_parent.mkdir(parents=True)
+
+        with patch("actions.file_actions.find_folder_path", return_value=mock_parent):
+            res = core.process("create a folder under d drive under this perticular folder CineCritic called reviews")
+            self.assertTrue(res.success)
+            self.assertTrue((mock_parent / "reviews").is_dir())
+            self.assertIn("created successfully", res.text.lower())
+
+    @patch("actions.file_actions.subprocess.Popen")
+    def test_direct_run_file_from_any_subfolder(self, mock_popen):
+        """Direct command 'run file <name> from any subfolders' finds and executes file."""
+        core = AstraAICore(settings_store=self.store)
+        script = Path(self.temp_dir.name) / "src" / "deep" / "custom_task.py"
+        script.parent.mkdir(parents=True)
+        script.write_text("print('running')", encoding="utf-8")
+
+        mock_proc = mock_popen.return_value
+        mock_proc.pid = 4321
+
+        with patch("actions.file_actions.find_file_path", return_value=script):
+            res = core.process("run file custom_task.py from any subfolders")
+            self.assertTrue(res.success)
+            self.assertIn("custom_task.py", res.text)
+
 
 if __name__ == "__main__":
     unittest.main()

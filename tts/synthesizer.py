@@ -115,7 +115,24 @@ class SpeechSynthesizer:
             self._is_speaking = True
 
         try:
-            # 1. Try pyttsx3 backend
+            # Windows SAPI is built in and avoids pyttsx3's fragile COM driver
+            # when it is used from a Qt worker thread.
+            if platform.system() == "Windows":
+                try:
+                    return self._speak_windows_powershell(clean_text)
+                except TTSError as windows_error:
+                    try:
+                        import pyttsx3  # type: ignore
+                    except ImportError:
+                        raise windows_error
+                    try:
+                        return self._speak_pyttsx3(clean_text, pyttsx3)
+                    except TTSError as pyttsx_error:
+                        raise SynthesisError(
+                            f"Windows speech backends failed: {windows_error}; {pyttsx_error}"
+                        ) from pyttsx_error
+
+            # 1. Try pyttsx3 on non-Windows platforms.
             try:
                 import pyttsx3  # type: ignore
 
@@ -123,11 +140,7 @@ class SpeechSynthesizer:
             except ImportError:
                 pass
 
-            # 2. Try Windows PowerShell System.Speech backend
-            if platform.system() == "Windows":
-                return self._speak_windows_powershell(clean_text)
-
-            # 3. No synthesizer backend available
+            # 2. No synthesizer backend available
             raise SynthesizerUnavailableError(
                 "No speech synthesizer engine found. Install pyttsx3: pip install pyttsx3"
             )

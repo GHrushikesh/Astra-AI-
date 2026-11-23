@@ -10,13 +10,23 @@ import unittest
 from unittest.mock import patch
 
 from actions.file_actions import (
+    _resolve_safe_path,
     create_folder,
+    delete_file,
+    delete_folder,
+    find_file_path,
+    find_folder_path,
     get_file_info,
+    list_folder,
     move_file,
     open_file,
     open_folder,
+    read_file,
     rename_file,
+    run_file,
     search_file,
+    smart_create_folder,
+    write_file,
 )
 
 
@@ -264,6 +274,205 @@ class TestFileActions(unittest.TestCase):
         res = search_file("*.txt", location=str(self.sandbox / "missing_folder"))
         self.assertFalse(res.success)
         self.assertEqual(res.error, "FileNotFoundError")
+
+    # ---------------------------------------------------------
+    # Subfolder creation, drive expressions, and quoted paths
+    # ---------------------------------------------------------
+    def test_create_nested_subfolders(self):
+        """Creating multi-level deep subfolders succeeds."""
+        nested = self.sandbox / "parent" / "child" / "grandchild"
+        res = create_folder(str(nested))
+        self.assertTrue(res.success)
+        self.assertTrue(nested.is_dir())
+        self.assertTrue(res.data["created"])
+
+    def test_create_folder_with_double_quotes(self):
+        """Path enclosed in double quotes is handled safely."""
+        target = self.sandbox / "quoted_folder" / "sub"
+        quoted = f'"{target}"'
+        res = create_folder(quoted)
+        self.assertTrue(res.success)
+        self.assertTrue(target.is_dir())
+
+    def test_create_folder_with_single_quotes(self):
+        """Path enclosed in single quotes is handled safely."""
+        target = self.sandbox / "single_quoted" / "sub"
+        quoted = f"'{target}'"
+        res = create_folder(quoted)
+        self.assertTrue(res.success)
+        self.assertTrue(target.is_dir())
+
+    def test_create_folder_with_forward_slashes(self):
+        """Path using forward slashes works properly."""
+        target = self.sandbox / "slash_dir" / "sub_dir"
+        forward_path = str(target).replace("\\", "/")
+        res = create_folder(forward_path)
+        self.assertTrue(res.success)
+        self.assertTrue(target.is_dir())
+
+    def test_resolve_safe_path_quotes_and_natural_language(self):
+        """_resolve_safe_path normalizes quotes, slashes, and natural phrases."""
+        # Surrounding quotes
+        p1 = _resolve_safe_path(f'"{self.sandbox}"')
+        self.assertEqual(p1, self.sandbox.resolve())
+
+        # Natural drive prefix
+        p2 = _resolve_safe_path("under e drive under some folder")
+        self.assertIsNotNone(p2)
+        self.assertIn("some folder", str(p2))
+
+    # ---------------------------------------------------------
+    # list_folder tests
+    # ---------------------------------------------------------
+    def test_list_folder_success(self):
+        """list_folder returns subfolders and files with metadata."""
+        sub = self.sandbox / "sub_dir"
+        sub.mkdir()
+        f1 = self.sandbox / "file1.txt"
+        f1.write_text("hello", encoding="utf-8")
+        f2 = self.sandbox / "file2.py"
+        f2.write_text("print()", encoding="utf-8")
+
+        res = list_folder(str(self.sandbox))
+        self.assertTrue(res.success)
+        self.assertEqual(res.data["folder_count"], 1)
+        self.assertEqual(res.data["file_count"], 2)
+        self.assertEqual(res.data["folders"][0]["name"], "sub_dir")
+        file_names = [f["name"] for f in res.data["files"]]
+        self.assertIn("file1.txt", file_names)
+        self.assertIn("file2.py", file_names)
+
+    def test_list_folder_not_found(self):
+        """list_folder on missing directory returns FileNotFoundError."""
+        res = list_folder(str(self.sandbox / "does_not_exist"))
+        self.assertFalse(res.success)
+        self.assertEqual(res.error, "FileNotFoundError")
+
+    def test_list_folder_on_file_rejected(self):
+        """list_folder on a regular file returns NotADirectoryError."""
+        f = self.sandbox / "a.txt"
+        f.write_text("test", encoding="utf-8")
+        res = list_folder(str(f))
+        self.assertFalse(res.success)
+        self.assertEqual(res.error, "NotADirectoryError")
+
+    # ---------------------------------------------------------
+    # write_file and read_file tests
+    # ---------------------------------------------------------
+    def test_write_and_read_file_in_subfolder(self):
+        """write_file creates parent folders and writes content; read_file reads it."""
+        sub_file = self.sandbox / "nested" / "deep" / "test.txt"
+        res_write = write_file(str(sub_file), "Initial content", mode="write")
+        self.assertTrue(res_write.success)
+        self.assertTrue(sub_file.exists())
+
+        res_read = read_file(str(sub_file))
+        self.assertTrue(res_read.success)
+        self.assertEqual(res_read.data["content"], "Initial content")
+
+    def test_write_file_append_and_overwrite(self):
+        """write_file supports append and overwrite modes."""
+        sub_file = self.sandbox / "doc.txt"
+        write_file(str(sub_file), "Part1", mode="write")
+
+        # Append
+        res_app = write_file(str(sub_file), " Part2", mode="append")
+        self.assertTrue(res_app.success)
+        self.assertEqual(sub_file.read_text(encoding="utf-8"), "Part1 Part2")
+
+        # Overwrite
+        res_over = write_file(str(sub_file), "Fresh", mode="overwrite")
+        self.assertTrue(res_over.success)
+        self.assertEqual(sub_file.read_text(encoding="utf-8"), "Fresh")
+
+    def test_write_file_existing_write_mode_conflict(self):
+        """write_file with mode='write' aborts if file exists."""
+        sub_file = self.sandbox / "existing.txt"
+        sub_file.write_text("orig", encoding="utf-8")
+        res = write_file(str(sub_file), "new", mode="write")
+        self.assertFalse(res.success)
+        self.assertEqual(res.error, "FileExistsError")
+
+    # ---------------------------------------------------------
+    # delete_file and delete_folder tests
+    # ---------------------------------------------------------
+    def test_delete_file_success(self):
+        """delete_file deletes regular files."""
+        f = self.sandbox / "delete_me.txt"
+        f.write_text("bye", encoding="utf-8")
+        res = delete_file(str(f))
+        self.assertTrue(res.success)
+        self.assertFalse(f.exists())
+
+    def test_delete_folder_recursive(self):
+        """delete_folder removes directory and all nested contents."""
+        sub = self.sandbox / "to_delete" / "sub"
+        sub.mkdir(parents=True)
+        (sub / "nested.txt").write_text("data", encoding="utf-8")
+
+        res = delete_folder(str(self.sandbox / "to_delete"), recursive=True)
+        self.assertTrue(res.success)
+        self.assertFalse((self.sandbox / "to_delete").exists())
+
+    # ---------------------------------------------------------
+    # Pathless search and execution tests
+    # ---------------------------------------------------------
+    def test_find_folder_path_nested(self):
+        """find_folder_path locates a folder by name inside nested subfolders."""
+        deep_folder = self.sandbox / "projects" / "ai" / "astra_core"
+        deep_folder.mkdir(parents=True)
+
+        found = find_folder_path("astra_core", root_location=str(self.sandbox))
+        self.assertEqual(found, deep_folder.resolve())
+
+    def test_find_file_path_nested(self):
+        """find_file_path locates a file anywhere within subfolders."""
+        deep_file = self.sandbox / "src" / "modules" / "helper.py"
+        deep_file.parent.mkdir(parents=True)
+        deep_file.write_text("print('hello')", encoding="utf-8")
+
+        found = find_file_path("helper.py", root_location=str(self.sandbox))
+        self.assertEqual(found, deep_file.resolve())
+
+    def test_smart_create_folder_under_nested_parent(self):
+        """smart_create_folder locates parent without full path and creates new folder."""
+        parent = self.sandbox / "deep" / "nested" / "target_parent"
+        parent.mkdir(parents=True)
+
+        res = smart_create_folder(
+            parent_folder="target_parent",
+            new_folder_name="auto_created",
+            drive=str(self.sandbox),
+        )
+        self.assertTrue(res.success)
+        self.assertTrue((parent / "auto_created").is_dir())
+
+    @patch("actions.file_actions.subprocess.Popen")
+    def test_run_file_python(self, mock_popen):
+        """run_file locates Python file in subfolder and spawns Python process."""
+        script = self.sandbox / "scripts" / "run_me.py"
+        script.parent.mkdir(parents=True)
+        script.write_text("print(1)", encoding="utf-8")
+
+        mock_proc = mock_popen.return_value
+        mock_proc.pid = 9999
+
+        res = run_file("run_me.py", location=str(self.sandbox))
+        self.assertTrue(res.success)
+        self.assertIn("Launched Python file", res.message)
+        mock_popen.assert_called_once()
+
+    @patch("actions.file_actions.os.startfile")
+    def test_run_file_document(self, mock_startfile):
+        """run_file opens document file via os.startfile."""
+        doc = self.sandbox / "docs" / "manual.pdf"
+        doc.parent.mkdir(parents=True)
+        doc.write_text("%PDF-1.4", encoding="utf-8")
+
+        res = run_file("manual.pdf", location=str(self.sandbox))
+        self.assertTrue(res.success)
+        self.assertIn("Opened file", res.message)
+        mock_startfile.assert_called_once_with(str(doc.resolve()))
 
 
 if __name__ == "__main__":

@@ -25,12 +25,19 @@ from actions.app_actions import (
 from actions.base import ActionResult, get_logger
 from actions.file_actions import (
     create_folder,
+    delete_file,
+    delete_folder,
     get_file_info,
+    list_folder,
     move_file,
     open_file,
     open_folder,
+    read_file,
     rename_file,
+    run_file,
     search_file,
+    smart_create_folder,
+    write_file,
 )
 from actions.system_actions import (
     get_battery_status,
@@ -218,6 +225,26 @@ class ActionRegistry:
         """
         tool = self._tools.get(name)
         if not tool:
+            extended_tools = {
+                "list_folder": list_folder,
+                "read_file": read_file,
+                "write_file": write_file,
+                "delete_file": delete_file,
+                "delete_folder": delete_folder,
+                "run_file": run_file,
+                "smart_create_folder": smart_create_folder,
+            }
+            if name in extended_tools:
+                try:
+                    params = parameters or {}
+                    logger.info("Executing extended action '%s' with parameters %s", name, params)
+                    return extended_tools[name](**params)
+                except Exception as exc:
+                    logger.error("Exception during extended action '%s' execution: %s", name, exc)
+                    return ActionResult.fail(
+                        message=f"Error executing action '{name}': {exc}",
+                        error=str(exc),
+                    )
             logger.warning("Attempted to execute unregistered action '%s'", name)
             return ActionResult.fail(
                 message=f"Action '{name}' is not registered.",
